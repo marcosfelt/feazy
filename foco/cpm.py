@@ -58,25 +58,34 @@ class TaskGroup:
         return self._tasks.get(task_code)
 
     def __repr__(self) -> str:
-        headers = ["Task Code", "Duration", "Early Start", "Early Finish", "Late Start", "Late Finish", "Slack"]
+        # headers = ["Task Code", "Duration", "Early Start", "Early Finish", "Late Start", "Late Finish", "Slack"]
+        headers = ["Task Code", "Task Description"+" "*20]
         repr = "".join([f"{h}\t" for h in headers])+"\n"
         d = 2
         for task in self._tasks.values():
             values = [
                 task.task_code, 
-                task.duration,
-                task.early_start, 
-                task.early_finish,
-                task._late_start,
-                task.late_finish, 
-                task.slack
+                task.description,
+                # task.duration,
+                # task.early_start, 
+                # task.early_finish,
+                # task._late_start,
+                # task.late_finish, 
+                # task.slack
             ]
             repr += "".join([str(v).ljust(len(h), " ")+"\t" for h, v in zip(headers,values)])
             offset = int(task.early_start/d if task.early_start != 0 else 0)
             repr += " "*offset
             # repr += "|"
-            dur = int(task.duration/d if task.duration >1 else 1)
+            dur = int(task.duration/d if task.duration>1 else 1)
             repr += "|"*dur
+            if task.late_start > task.early_finish:
+                offset = int((task.late_start-task.early_finish)/d)
+                repr += " "*offset
+                repr += "*"*dur
+            else:
+                dur = int((task.late_finish-task.early_finish)/d)
+                repr += "*"*dur
             repr += "\n"
         return repr
         
@@ -125,10 +134,10 @@ def cpm(
         if current_node not in predecessor_nodes and current_node.val != finish_task_code:
             backward_visit_stack.put(current_node)
             
-            # Find predecessors and calculate lates
+            # Find predecessors and calculate latest
             for predecessor_node in predecessor_nodes:
                 if current_node in predecessor_node.adjacents:
-                    adj_finish_time = tasks[adj.val].early_finish
+                    adj_finish_time = tasks[predecessor_node.val].early_finish
                     if adj_finish_time > latest_predecessor:
                         latest_predecessor = adj_finish_time
 

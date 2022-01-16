@@ -25,7 +25,7 @@ def main():
     cpm(
         tasks,
         g,
-        deadline=100,
+        deadline=90,
         root_task_code="T03"
     )
 
