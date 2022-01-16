@@ -1,14 +1,7 @@
-import pdb
+from .utils import Graph, GraphDirection
 from queue import LifoQueue, SimpleQueue
-from utils import Graph, GraphDirection, GraphSearch, reverse_graph
-from typing import List, Optional, Dict
+from typing import List, Optional
 
-
-def read_file(file: str, delimeter: str="\t")-> List[List[str]]:
-    with open(file, "r") as f:
-        lines = f.readlines()
-
-    return [line.rstrip("\n").split("\t") for line in lines]
 
 class Task:
     def __init__(self, task_code: str, duration: int, description: Optional[str] = None)-> None:
@@ -56,7 +49,6 @@ class TaskGroup:
             task.task_code: task
             for task in tasks
         }
-
     
     def remove_task(self, task_code):
         if task_code in self._tasks:
@@ -80,7 +72,7 @@ class TaskGroup:
                 task.slack
             ]
             repr += "".join([str(v).ljust(len(h), " ")+"\t" for h, v in zip(headers,values)])
-            offset = int(task.late_start/d if task.late_start != 0 else 0)
+            offset = int(task.early_start/d if task.early_start != 0 else 0)
             repr += " "*offset
             # repr += "|"
             dur = int(task.duration/d if task.duration >1 else 1)
@@ -126,20 +118,20 @@ def cpm(
     for adj in root_node.adjacents:
         visit_queue.put(adj)
     early_finish_time = 0
+    latest_predecessor = 0
     while not visit_queue.empty():
         current_node = visit_queue.get(block=True)
         # Find latest finish time of predecessors
         if current_node not in predecessor_nodes and current_node.val != finish_task_code:
             backward_visit_stack.put(current_node)
             
-            # Find predecessors and calculate latest
-            latest_predecessor = 0
+            # Find predecessors and calculate lates
             for predecessor_node in predecessor_nodes:
                 if current_node in predecessor_node.adjacents:
                     adj_finish_time = tasks[adj.val].early_finish
                     if adj_finish_time > latest_predecessor:
                         latest_predecessor = adj_finish_time
-            
+
             # Make this task's early start time 
             # the latest finish of its predecessors
             task = tasks[current_node.val]
@@ -198,34 +190,3 @@ def cpm(
 
     # Make the root task the earliest late starter
     root_task.late_start = first_dependent_time - root_task.duration
-
-if __name__ == "__main__":
-    # Read in tasks and dependencies
-    task_list = read_file("tasks.txt")
-    dependencies=read_file("dependencies.txt")
-
-    # Put tasks in object
-    tasks = TaskGroup([
-        Task(
-            task_code=task[0],
-            description=task[1],
-            duration=int(task[2])
-        )
-        for task in task_list
-    ])
-
-    # Create depdency graph
-    g = Graph(edge_direction=GraphDirection.DIRECTED)
-    for dependency in dependencies:
-        g.add_edge(dependency[0], dependency[1])
-
-    # Run critical path method
-    cpm(
-        tasks,
-        g,
-        deadline=100,
-        root_task_code="T03"
-    )
-
-    # Print out final task group
-    print(tasks)

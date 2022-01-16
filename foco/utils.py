@@ -137,6 +137,12 @@ def reverse_graph(g: Graph):
     return new_graph
 
 
+def read_file(file: str, delimeter: str="\t")-> List[List[str]]:
+    with open(file, "r") as f:
+        lines = f.readlines()
+
+    return [line.rstrip("\n").split("\t") for line in lines]
+
 
 if __name__ == "__main__":
     # Graphs
