@@ -1,0 +1,141 @@
+from __future__ import annotations
+from typing import List, Tuple, Dict
+from queue import LifoQueue, SimpleQueue
+
+
+class Node:
+    def __init__(self, val: str) -> None:
+        self.val = val
+        self._adjacents = []
+
+    def add_adjacent(self, node: Node) -> None:
+        self._adjacents.append(node)
+
+    def remove_adjacent(self, node: Node) -> None:
+        try:
+            self._adjacents.remove(node)
+        except ValueError:
+            raise ValueError("Node does not exist in adjacents")
+    
+    def is_adjacent(self, node: Node) -> bool:
+        return node in self._adjacents
+    
+    @property
+    def adjacents(self) -> List[Node]:
+        return self._adjacents
+    
+    def __repr__(self) -> str:
+        adjs = "".join([f"{adj.val}, " for adj in self._adjacents]).rstrip(", ")
+        return f"Node(Val: {self.val} | Adjacents: {adjs})"
+
+class GraphDirection:
+    DIRECTED = "directed"
+    UNDIRECTED = "undirected"
+
+class GraphSearch:
+    BFS = "bfs"
+    DFS = "dfs"
+
+class Graph:
+    def __init__(self, edge_direction: str = GraphDirection.UNDIRECTED) -> None:
+        self._nodes: Dict[str, Node]
+        self._nodes = {}
+        self.edge_direction = edge_direction
+
+    def create_node(self, val: str) -> Node:
+        """Add a node to the graph"""
+        if val in self._nodes:
+            return self._nodes[val]
+        else:
+            node = Node(val)
+            self._nodes[node.val] = node
+            return node
+    
+    def remove_node(self, val: str) -> Node:
+        """Remove a node from the graph"""
+        if val in self._nodes:
+            current = self._nodes.pop(val)
+            for node in self._nodes.values():
+                node.remove_adjacent(current)
+            return current
+        
+    def add_edge(self, source_val: str, destination_val: str) -> Tuple[Node, Node]:
+        """Add an edge to the graph"""
+        source_node = self.create_node(source_val)
+        destination_node = self.create_node(destination_val)
+
+        source_node.add_adjacent(destination_node)
+
+        if self.edge_direction == GraphDirection.UNDIRECTED:
+            destination_node.add_adjacent(source_node)
+        
+        return source_node, destination_node
+
+    def remove_edge(self, source_val: str, destination_val: str)-> Tuple[Node, Node]:
+        source_node = self._nodes.get(source_val)
+        destination_node = self._nodes.get(destination_val)
+        if source_node and destination_node:
+            source_node.remove_adjacent(destination_node)
+
+            if self.edge_direction == GraphDirection.UNDIRECTED:
+                destination_node.remove_adjacent(source_node)
+
+        return source_node, destination_node
+
+    def are_adjacent(self, source_val: str, destination_val: str) -> bool:
+        """Check if two nodes are adjacent"""
+        source_node = self._nodes.get(source_val)
+        destination_node = self._nodes.get(destination_val)
+        if source_node and destination_node:
+            check_1 = destination_node in source_node.adjacents
+            if self.edge_direction == GraphDirection.UNDIRECTED:
+                check_2 = source_node in destination_node.adjacents
+            return check_1 and check_2
+            
+
+    def graph_search(self, root_val: str, type: str = GraphSearch.BFS):
+        """Search over the graph"""
+        visited = {}
+        visit_list = SimpleQueue() if type == GraphSearch.BFS else LifoQueue()
+        
+        # Add root to queue to start
+        root = self._nodes.get(root_val)
+        if root:
+            visit_list.put(root)
+        else:
+            ValueError(f"{root_val} is not in the graph")
+
+        while not visit_list.empty():
+            node = visit_list.get(block=True)
+            if node.val not in visited:
+                yield node
+                visited[node.val] = node
+                for adjacent in node.adjacents:
+                    visit_list.put(adjacent)
+
+
+    def __repr__(self) -> str:
+        return "Graph(\n" + "".join([f"\t{node}\n" for node in self._nodes.values()]) + ")"
+
+    
+
+if __name__ == "__main__":
+    # Graphs
+    g = Graph(GraphDirection.UNDIRECTED)
+    g.add_edge("a", "b")
+    g.add_edge("b", "c")
+    g.add_edge("c", "d")
+    g.add_edge("a", "e")
+    g.add_edge("a", "f")
+    g.add_edge("f", "g")
+    g.add_edge("g", "h")
+    g.add_edge("g", "d")
+
+    print("Bread First Search")
+    for node in g.graph_search("a", type=GraphSearch.BFS):
+        print(node)
+
+    print()
+    print("Depth First Search")
+    for node in g.graph_search("a", type=GraphSearch.DFS):
+        print(node)

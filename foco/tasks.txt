@@ -1,0 +1,19 @@
+T01	Installing the Construction Site	2
+T02	Terracing	24
+T03	Constructing Foundations	9
+T04	Access Roads	8
+T05	Basement	10
+T06	Main Floor	6
+T07	Chaning Rooms	2
+T08	Electrifying Terraces	2
+T09	Roof	9
+T10	Stadium Lighting	5
+T11	Installing Terraces	3
+T12	Sealing Roof	2
+T13	Finish Changing Rooms	1
+T14	Constructing Ticket Office	7
+T15	Secondary Access Roads	4
+T16	Signalling	3
+T17	Lawn and Accessories	9
+T18	Handing Over	1
+Finish	Finish	0
