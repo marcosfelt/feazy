@@ -28,6 +28,10 @@ class Node:
         adjs = "".join([f"{adj.val}, " for adj in self._adjacents]).rstrip(", ")
         return f"Node(Val: {self.val} | Adjacents: {adjs})"
 
+    def __eq__(self, node: Node) -> bool:
+        return (node.val == self.val) and all([a1==a2 for a1, a2 in zip(node.adjacents, self.adjacents)])
+
+
 class GraphDirection:
     DIRECTED = "directed"
     UNDIRECTED = "undirected"
@@ -58,7 +62,10 @@ class Graph:
             for node in self._nodes.values():
                 node.remove_adjacent(current)
             return current
-        
+    
+    def get_node(self, val: str) -> Node:
+        return self._nodes.get(val)
+
     def add_edge(self, source_val: str, destination_val: str) -> Tuple[Node, Node]:
         """Add an edge to the graph"""
         source_node = self.create_node(source_val)
@@ -113,25 +120,34 @@ class Graph:
                 for adjacent in node.adjacents:
                     visit_list.put(adjacent)
 
+    @property
+    def nodes(self)-> List[Node]:
+        return [n for n in self._nodes.values()]
 
     def __repr__(self) -> str:
         return "Graph(\n" + "".join([f"\t{node}\n" for node in self._nodes.values()]) + ")"
 
-    
+def reverse_graph(g: Graph):
+    if g.edge_direction != GraphDirection.DIRECTED:
+        raise ValueError("Must be a directed graph")
+    new_graph = Graph(edge_direction=GraphDirection.DIRECTED)
+    for node in g.nodes:
+        for adj in node.adjacents:
+            new_graph.add_edge(adj.val, node.val)
+    return new_graph
+
+
 
 if __name__ == "__main__":
     # Graphs
     g = Graph(GraphDirection.UNDIRECTED)
+    g.create_node("a")
     g.add_edge("a", "b")
-    g.add_edge("b", "c")
+    g.add_edge("a", "c")
     g.add_edge("c", "d")
-    g.add_edge("a", "e")
-    g.add_edge("a", "f")
-    g.add_edge("f", "g")
-    g.add_edge("g", "h")
-    g.add_edge("g", "d")
+    g.add_edge("d", "f")
 
-    print("Bread First Search")
+    print("Breadth First Search")
     for node in g.graph_search("a", type=GraphSearch.BFS):
         print(node)
 

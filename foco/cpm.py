@@ -1,4 +1,6 @@
-from utils import Graph, GraphDirection, GraphSearch
+import pdb
+from queue import LifoQueue, SimpleQueue
+from utils import Graph, GraphDirection, GraphSearch, reverse_graph
 from typing import List, Optional, Dict
 
 
@@ -14,7 +16,7 @@ class Task:
         self.duration = duration
         self.description = description
         self._early_start: int = 0
-        self._late_start: int = 0
+        self._late_start: int = None
 
     @property
     def early_start(self)-> int:
@@ -48,107 +50,182 @@ class Task:
     def slack(self) -> int:
         return self.late_start - self.early_start
 
-# class TaskGroup:
-#     def __init__(self, tasks: List[Task]):
-#         self._tasks = {
-#             task.task_code: task
-#             for task in tasks
-#         }
+class TaskGroup:
+    def __init__(self, tasks: List[Task]):
+        self._tasks = {
+            task.task_code: task
+            for task in tasks
+        }
 
-#     def get_task(self, task_code):
-#         return self._tasks.get(task_code)
     
-#     def remove_task(self, task_code):
-#         if task_code in self._tasks:
-#             return self._tasks.pop(task_code)
+    def remove_task(self, task_code):
+        if task_code in self._tasks:
+            return self._tasks.pop(task_code)
 
-#     def __get
+    def __getitem__(self, task_code):
+        return self._tasks.get(task_code)
+
+    def __repr__(self) -> str:
+        headers = ["Task Code", "Duration", "Early Start", "Early Finish", "Late Start", "Late Finish", "Slack"]
+        repr = "".join([f"{h}\t" for h in headers])+"\n"
+        d = 2
+        for task in self._tasks.values():
+            values = [
+                task.task_code, 
+                task.duration,
+                task.early_start, 
+                task.early_finish,
+                task._late_start,
+                task.late_finish, 
+                task.slack
+            ]
+            repr += "".join([str(v).ljust(len(h), " ")+"\t" for h, v in zip(headers,values)])
+            offset = int(task.late_start/d if task.late_start != 0 else 0)
+            repr += " "*offset
+            # repr += "|"
+            dur = int(task.duration/d if task.duration >1 else 1)
+            repr += "|"*dur
+            repr += "\n"
+        return repr
+        
+    @property
+    def all_tasks(self):
+        return [t for t in self._tasks]
 
 def cpm(
+    tasks: TaskGroup,
+    dependencies: Graph,
     deadline: int,
-    root_task_code: Optional[str] = None, 
+    root_task_code: str,
     finish_task_code: Optional[str]="Finish"
 ):
-    """Critical Path Method"""
+    """Critical Path Method
+    
+    Arguments
+    ---------
+    tasks : TaskGroup
+        The set of tasks to perform the critical path method on
+    dependencies : Graph
+        The dependencies between tasks
+    deadline : int
+        The deadline for the project to be complete
+    root_task_code : str
+        The code of the root task 
+    finish_task_code : optional, str
+        The code of the final task. Defaults to Finish.
+    
+    """
+    if dependencies.edge_direction != GraphDirection.DIRECTED:
+        raise ValueError("Dependencies must be a directed graph")
+
+    # Breadth-first search for forward pass
+    visit_queue = SimpleQueue() # FIFO queue for doing forward pass
+    backward_visit_stack = LifoQueue() # Stack for doing backward wpass
+    root_node = dependencies.get_node(root_task_code)
+    predecessor_nodes = [root_node]
+    for adj in root_node.adjacents:
+        visit_queue.put(adj)
+    early_finish_time = 0
+    while not visit_queue.empty():
+        current_node = visit_queue.get(block=True)
+        # Find latest finish time of predecessors
+        if current_node not in predecessor_nodes and current_node.val != finish_task_code:
+            backward_visit_stack.put(current_node)
+            
+            # Find predecessors and calculate latest
+            latest_predecessor = 0
+            for predecessor_node in predecessor_nodes:
+                if current_node in predecessor_node.adjacents:
+                    adj_finish_time = tasks[adj.val].early_finish
+                    if adj_finish_time > latest_predecessor:
+                        latest_predecessor = adj_finish_time
+            
+            # Make this task's early start time 
+            # the latest finish of its predecessors
+            task = tasks[current_node.val]
+            task.early_start = latest_predecessor
+
+            # Add new adjacents
+            for adj in current_node.adjacents:
+                if adj not in predecessor_nodes:
+                    visit_queue.put(adj, block=True)
+            
+            # Mark current node as visited
+            predecessor_nodes.append(current_node)
+       
+            # Make the overall finish time the latest overall finishing task
+            if task.early_finish > early_finish_time:
+                early_finish_time = task.early_finish
+
+    # Make Finish task last
+    finish_task = tasks[finish_task_code]
+    finish_task.early_start = early_finish_time
+    finish_task.late_start = deadline
+
+    # Breadth-first search for backward pass
+    successor_nodes = [dependencies.get_node(finish_task_code)]
+    first_dependent_time = deadline
+    root_task = tasks[root_task_code]
+    check_at_end = []
+    while not backward_visit_stack.empty():
+        # Make each upstream tasks’ late finish time 
+        # the earliest late start of its successors
+        current_node = backward_visit_stack.get(block=True)
+        earliest_successor = deadline
+        visited_successors = all([adj in successor_nodes for adj in current_node.adjacents])
+        if visited_successors:
+            for adj in current_node.adjacents:
+                adj_start_time = tasks[adj.val].late_start
+                if adj_start_time < earliest_successor:
+                    earliest_successor = adj_start_time
+            task = tasks[current_node.val]
+            task.late_start = earliest_successor - task.duration
+        
+            # Make the root task the earliest late starter
+            if task.late_start < first_dependent_time and task != root_task:
+                first_dependent_time = task.late_start
+
+            # Append current node to visted nodes
+            successor_nodes.append(current_node)
+        else:
+            check_at_end.append(current_node)
+        
+        # Some nodes might need to be saved to the end
+        if backward_visit_stack.empty():
+            for node in check_at_end:
+                backward_visit_stack.put(node)
+            check_at_end = []
+
+    # Make the root task the earliest late starter
+    root_task.late_start = first_dependent_time - root_task.duration
+
+if __name__ == "__main__":
     # Read in tasks and dependencies
     task_list = read_file("tasks.txt")
     dependencies=read_file("dependencies.txt")
 
     # Put tasks in object
-    tasks: Dict[str: Task]
-    tasks = {
-        task[0]: Task(
+    tasks = TaskGroup([
+        Task(
             task_code=task[0],
             description=task[1],
             duration=int(task[2])
         )
         for task in task_list
-    }
+    ])
 
     # Create depdency graph
-    g = Graph(edge_direction=GraphDirection.UNDIRECTED)
+    g = Graph(edge_direction=GraphDirection.DIRECTED)
     for dependency in dependencies:
         g.add_edge(dependency[0], dependency[1])
-    
-    # BFS for forward pass
-    if root_task_code is None:
-        root_task_code = task_list[0][0]
-    root_task: Task
-    root_task = tasks[root_task_code]
-    previous_level_finish_time = root_task.early_finish
-    this_level_finish_time = 0
-    for node in g.graph_search(root_task_code, type=GraphSearch.BFS):
-        if node.val == root_task_code:
-            continue
-        # Make each downstream tasks’ early start time the latest finish of its predecessors
-        tasks[node.val].early_start = previous_level_finish_time
 
-        # If finish time is greater than latest finish time of this level, make it the latest
-        if tasks[node.val].early_finish > this_level_finish_time:
-            this_level_finish_time = tasks[node.val].early_finish
+    # Run critical path method
+    cpm(
+        tasks,
+        g,
+        deadline=100,
+        root_task_code="T03"
+    )
 
-        # When finished with a level, reset
-        if node.val not in g._nodes[root_task_code].adjacents:
-            root_task_code = node.val
-            previous_level_finish_time = this_level_finish_time
-
-    # Make sure Finish is always last
-    finish_task = tasks[finish_task_code]
-    finish_task.early_start = this_level_finish_time
-    finish_task.late_start = deadline
-
-    # # BFS for backward pass
-    this_level_start_time = finish_task.late_start
-    next_level_start_time = deadline
-    for node in g.graph_search(finish_task_code, type=GraphSearch.BFS):
-        if node.val == "Finish":
-            continue
-
-        # Calculate the late start time for each predecessor as T - t
-        tasks[node.val].late_start = this_level_start_time - tasks[node.val].duration
-
-        # Saave the earliest late start time
-        if tasks[node.val].late_start < next_level_start_time:
-            next_level_start_time = tasks[node.val].late_start
-
-        # When finished with a level, reset
-        if node.val not in g._nodes[root_task_code].adjacents:
-            root_task_code = node.val
-            this_level_start_time = next_level_start_time
-
-
-    headers = ["Task Code", "Duration", "Early Start", "Early Finish", "Late Start", "Late Finish", "Slack"]
-    print("".join([f"{h}\t" for h in headers]))
-    for task in tasks.values():
-        values = [task.task_code, task.duration, task.early_start, task.early_finish, task._late_start, task.late_finish, task.slack]
-        line = "".join([str(v).ljust(len(h), " ")+"\t" for h, v in zip(headers,values)])
-        line += "\t"
-        offset = int(task.early_start/2 if task.early_start != 0 else 0)
-        dur = int(task.duration/2 if task.duration !=0 else 1)
-        line += " "*offset
-        line += "|"*dur
-        print(line)
-
-
-if __name__ == "__main__":
-    cpm(150, root_task_code="T03")
+    # Print out final task group
+    print(tasks)
