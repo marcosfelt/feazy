@@ -6,6 +6,8 @@ authors = ["Kobi Felton <kobi.c.f@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.7.1"
+psutil = "^5.9.0"
+pyobjc = "^8.1"
 
 [tool.poetry.dev-dependencies]
 
