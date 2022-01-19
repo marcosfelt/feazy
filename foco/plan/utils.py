@@ -4,6 +4,7 @@ from queue import LifoQueue, SimpleQueue
 
 
 class Node:
+    """Representaiton of a node in a graph"""
     def __init__(self, val: str) -> None:
         self.val = val
         self._adjacents = []
@@ -41,6 +42,7 @@ class GraphSearch:
     DFS = "dfs"
 
 class Graph:
+    """Representation of a directed or undirected graph"""
     def __init__(self, edge_direction: str = GraphDirection.UNDIRECTED) -> None:
         self._nodes: Dict[str, Node]
         self._nodes = {}
@@ -128,6 +130,7 @@ class Graph:
         return "Graph(\n" + "".join([f"\t{node}\n" for node in self._nodes.values()]) + ")"
 
 def reverse_graph(g: Graph):
+    """ Reverse direction of graph"""
     if g.edge_direction != GraphDirection.DIRECTED:
         raise ValueError("Must be a directed graph")
     new_graph = Graph(edge_direction=GraphDirection.DIRECTED)

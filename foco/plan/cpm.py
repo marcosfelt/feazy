@@ -1,113 +1,31 @@
+"""
+Critical Path method
+"""
+from __future__ import annotations
 from .utils import Graph, GraphDirection
+from .task import Task, TaskGraph
 from queue import LifoQueue, SimpleQueue
 from typing import List, Optional
 
 
-class Task:
-    def __init__(self, task_code: str, duration: int, description: Optional[str] = None)-> None:
-        self._task_code = task_code
-        self.duration = duration
-        self.description = description
-        self._early_start: int = 0
-        self._late_start: int = None
-
-    @property
-    def early_start(self)-> int:
-        return self._early_start
-
-    @early_start.setter
-    def early_start(self, time: int) -> None:
-        self._early_start = time
-
-    @property
-    def early_finish(self)-> int:
-        return self._early_start + self.duration
-
-    @property
-    def late_start(self)-> int:
-        return self._late_start
-
-    @late_start.setter
-    def late_start(self, time: int) -> None:
-        self._late_start = time
-
-    @property
-    def late_finish(self)-> int:
-        return self._late_start + self.duration
-
-    @property
-    def task_code(self)-> str:
-        return self._task_code
-
-    @property
-    def slack(self) -> int:
-        return self.late_start - self.early_start
-
-class TaskGroup:
-    def __init__(self, tasks: List[Task]):
-        self._tasks = {
-            task.task_code: task
-            for task in tasks
-        }
-    
-    def remove_task(self, task_code):
-        if task_code in self._tasks:
-            return self._tasks.pop(task_code)
-
-    def __getitem__(self, task_code):
-        return self._tasks.get(task_code)
-
-    def __repr__(self) -> str:
-        # headers = ["Task Code", "Duration", "Early Start", "Early Finish", "Late Start", "Late Finish", "Slack"]
-        headers = ["Task Code", "Task Description"+" "*20]
-        repr = "".join([f"{h}\t" for h in headers])+"\n"
-        d = 2
-        for task in self._tasks.values():
-            values = [
-                task.task_code, 
-                task.description,
-                # task.duration,
-                # task.early_start, 
-                # task.early_finish,
-                # task._late_start,
-                # task.late_finish, 
-                # task.slack
-            ]
-            repr += "".join([str(v).ljust(len(h), " ")+"\t" for h, v in zip(headers,values)])
-            offset = int(task.early_start/d if task.early_start != 0 else 0)
-            repr += " "*offset
-            # repr += "|"
-            dur = int(task.duration/d if task.duration>1 else 1)
-            repr += "|"*dur
-            if task.late_start > task.early_finish:
-                offset = int((task.late_start-task.early_finish)/d)
-                repr += " "*offset
-                repr += "*"*dur
-            else:
-                dur = int((task.late_finish-task.early_finish)/d)
-                repr += "*"*dur
-            repr += "\n"
-        return repr
-        
-    @property
-    def all_tasks(self):
-        return [t for t in self._tasks]
 
 def cpm(
-    tasks: TaskGroup,
+    tasks: TaskGraph,
     dependencies: Graph,
     deadline: int,
     root_task_code: str,
     finish_task_code: Optional[str]="Finish"
 ):
     """Critical Path Method
+
+    Calculates the early/late start and finish times of tasks.
     
     Arguments
     ---------
     tasks : TaskGroup
         The set of tasks to perform the critical path method on
     dependencies : Graph
-        The dependencies between tasks
+        The dependencies between tasks. Must be a directed graph.
     deadline : int
         The deadline for the project to be complete
     root_task_code : str
