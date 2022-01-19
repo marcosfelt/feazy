@@ -80,23 +80,6 @@ class TaskTimeConverter:
         pass
 
 
-TASKS = {
-    ("Paper_1", "Blue"): {"dur": 45, "prec": None},
-    ("Paper_1", "Yellow"): {"dur": 10, "prec": ("Paper_1", "Blue")},
-    ("Paper_2", "Blue"): {"dur": 20, "prec": ("Paper_2", "Green")},
-    ("Paper_2", "Green"): {"dur": 10, "prec": None},
-    ("Paper_2", "Yellow"): {"dur": 34, "prec": ("Paper_2", "Blue")},
-    ("Paper_3", "Blue"): {"dur": 12, "prec": ("Paper_3", "Yellow")},
-    ("Paper_3", "Green"): {"dur": 17, "prec": ("Paper_3", "Blue")},
-    ("Paper_3", "Yellow"): {"dur": 28, "prec": None},
-}
-
-TASKS = {
-    ("T01", "HARD"): {"duration": 10, "successors": [("T01", "EASY")]},
-    ("T02", "MEDIUM"): {"duration": 20, "successors": [("T02", "MEDIUM")]},
-}
-
-
 def create_pyomo_optimization_model(tasks: TaskGraph) -> Model:
     model = ConcreteModel()
 
@@ -124,7 +107,6 @@ def create_pyomo_optimization_model(tasks: TaskGraph) -> Model:
     )
     model.TASK_ORDER = Set(
         initialize=dependencies,
-        # filter=lambda model, j, m, k, n: (k,n) == tasks[(j,m)]['prec']
     )
 
     # The set of disjunctions (i.e., no time overlaps) is cross-product of jobs, jobs and LEVELS
@@ -144,7 +126,7 @@ def create_pyomo_optimization_model(tasks: TaskGraph) -> Model:
 
     # Create decision variables
     model.makespan = Var(bounds=(0, ub))
-    model.start = Var(model.TASKS, bounds=(0, ub))
+    model.start = Var(model.TASKS, bounds=(0, ub), domain=PositiveIntegers)
 
     # Create ojective
     model.objective = Objective(expr=model.makespan, sense=minimize)
@@ -155,13 +137,14 @@ def create_pyomo_optimization_model(tasks: TaskGraph) -> Model:
         rule=lambda model, j, m: model.start[j, m] + model.dur[j, m] <= model.makespan,
     )
 
-    #
+    # Constraint for task dependencies
     model.preceding = Constraint(
         model.TASK_ORDER,
         rule=lambda model, j, m, k, n: model.start[j, m] + model.dur[j, m]
         <= model.start[k, n],
     )
 
+    # Constraint for non-overalapping tasks
     model.disjunctions = Disjunction(
         model.DISJUNCTIONS,
         rule=lambda model, j, k, m: [

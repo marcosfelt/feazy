@@ -129,15 +129,16 @@ class TaskGraph(Graph):
 
     def __repr__(self) -> str:
         # headers = ["Task Code", "Duration", "Early Start", "Early Finish", "Late Start", "Late Finish", "Slack"]
-        headers = ["Task Code", "Task Description" + " " * 20]
+        headers = ["Task Code", "Task Description" + " " * 20, "Difficulty", "Start"]
         repr = "".join([f"{h}\t" for h in headers]) + "\n"
         d = 2
         for task in self._nodes.values():
             values = [
                 task.task_id,
                 task.description,
+                task.difficulty.name,
                 # task.duration,
-                # task.early_start,
+                task.early_start,
                 # task.early_finish,
                 # task._late_start,
                 # task.late_finish,
