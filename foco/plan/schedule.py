@@ -38,46 +38,117 @@ min(project_duration-total_slack)
 # s.t. tau_i
 
 """
-from .task import Task, TaskGraph
-from .utils import Graph
-from typing import List, Dict
-import pandas as pd
-from datetime import date, datetime
+from .task import TaskGraph
+from datetime import datetime
+from typing import List, Union, Tuple, Optional
+from gcsa.google_calendar import GoogleCalendar, Event
+from beautiful_date import *
 from pyomo.environ import *
 from pyomo.gdp import *
+import pytz
 
-from foco.plan import task
+
+fmt_date = lambda d: d.astimezone(pytz.timezone("UTC")).strftime("%m/%d/%Y, %H:%M:%S")
 
 
 class Rules:
     pass
 
 
-class CalendarItem:
+def get_calendars(
+    cal: GoogleCalendar, only_selected=False, exclude: Optional[List[str]] = None
+) -> List[GoogleCalendar]:
+    """Get all calendars associated with an account
+
+    Arguments
+    --------
+    only_selected : bool
+        Only get calendars that are selected in the interface.
+
+    """
+    all_calendar_dicts = cal.service.calendarList().list().execute()
+    all_calendars = []
+    for c in all_calendar_dicts["items"]:
+        selected = c.get("selected", False)
+        if only_selected and not selected:
+            continue
+        if c["id"] in exclude:
+            continue
+        all_calendars.append(GoogleCalendar(c["id"]))
+    return all_calendars
+
+
+def handle_recurrence(event: Event, earliest_time: datetime) -> None:
+    if event.recurrence and event.start < earliest_time:
+        start_time = datetime(
+            earliest_time.year,
+            earliest_time.month,
+            earliest_time.day,
+            event.start.hour,
+            event.start.minute,
+            tzinfo=event.start.tzinfo,
+        )
+        end_time = datetime(
+            earliest_time.year,
+            earliest_time.month,
+            earliest_time.day,
+            event.end.hour,
+            event.end.minute,
+            tzinfo=event.end.tzinfo,
+        )
+        event.start = start_time
+        event.end = end_time
+
+
+def get_availability(
+    calendars: Union[GoogleCalendar, List[GoogleCalendar]],
+    start_time: datetime,
+    end_time: datetime,
+) -> List[Tuple[datetime, datetime]]:
+    """Get availability in a particular time range
+
+    Ideally focus on one day for this to work best
+
+    Returns availabilities represented as list of tuples of start and end times
+    """
+    # Get events in that time range
+    events = []
+    if type(calendars) == GoogleCalendar:
+        calendars = [calendars]
+    for calendar in calendars:
+        these_events = calendar.get_events(
+            start_time,
+            end_time,
+            # order_by="startTime",
+            # single_events=False,
+        )
+        for event in these_events:
+            handle_recurrence(event, earliest_time=start_time)
+            events.append(event)
+
+    # Sort events by time
+    events.sort()
+    for event in events:
+        print(event)
+
+    # Specify availability as a list of times where there aren't events
+    availabilities = []
+    latest_end = start_time
+    for prev_event, next_event in zip(events, events[1:]):
+        bookend = prev_event.end == next_event.start
+        if prev_event.end > latest_end and not bookend:
+            availabilities.append((prev_event.end, next_event.start))
+            latest_end = event.end
+
+    return availabilities
+
+
+def schedule_tasks(
+    calendar, tasks: TaskGraph, start_time: datetime, schedule_rules: Rules
+):
+    """Schedule tasks starting from start_time according to schedule_rules"""
+
     pass
-
-
-def generate_time_forecast(
-    current_schedule: List[CalendarItem],
-    work_rules: Rules,
-    earliest_task: int,
-    latest_task: int,
-) -> pd.DataFrame:
-    # Generate an available time forecast
-    # taking into consideration current schedule, work rules and working hours.
-    pass
-
-
-class TaskTimeConverter:
-    def __init__(self, time_forecast: pd.DataFrame, level_names: List[str]):
-        self.time_forecast = time_forecast
-        self.level_names = level_names
-
-    def task_to_date(self, task_time: int, task_level: str):
-        pass
-
-    def date_to_task(self, date: datetime, task_level: str):
-        pass
 
 
 def create_pyomo_optimization_model(tasks: TaskGraph) -> Model:

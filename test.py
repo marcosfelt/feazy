@@ -1,6 +1,8 @@
 from foco.plan import Task, TaskGraph, TaskDifficulty, read_file, optimize_schedule
 import random
 
+from foco.plan.schedule import get_calendars
+
 
 def main_cpm():
     # Read in tasks and dependencies
@@ -63,4 +65,27 @@ def main_optimization():
 
 
 if __name__ == "__main__":
-    main_optimization()
+    from foco.plan import get_availability
+    from beautiful_date import *
+    from gcsa.google_calendar import GoogleCalendar
+    import pytz
+
+    base = GoogleCalendar("kobi.c.f@gmail.com")
+    all_calendars = get_calendars(
+        base,
+        only_selected=True,
+        exclude=["jc1o00r4ve65t348l20l2q0090ken3q7@import.calendar.google.com"],
+    )
+    timezone = pytz.timezone("UTC")
+    start_time = timezone.localize((Jan / 19 / 2022)[00:00])
+    end_time = start_time + 1 * days
+    availabilities = get_availability(
+        all_calendars, start_time=start_time, end_time=end_time
+    )
+    for availability in availabilities:
+        fmt_date = lambda d: d.astimezone(pytz.timezone("UTC")).strftime(
+            "%m/%d/%Y, %H:%M:%S"
+        )
+        print(fmt_date(availability[0]), "-", fmt_date(availability[1]))
+
+    # main_optimization()
