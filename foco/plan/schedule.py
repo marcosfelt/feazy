@@ -38,23 +38,19 @@ min(project_duration-total_slack)
 # s.t. tau_i
 
 """
-from queue import LifoQueue, Queue
-from re import I
-from tabnanny import check
-from tracemalloc import start
-
-from numpy import block
+from queue import Queue
 from .task import Task, TaskGraph, TaskDifficulty
 from datetime import datetime, time, timedelta, date
 from typing import List, Union, Tuple, Optional, Dict
 from gcsa.google_calendar import GoogleCalendar, Event
 from gcsa.event import Transparency
-from dateutil.rrule import rrule, WEEKLY, DAILY
+from dateutil.rrule import rrule, DAILY
 from beautiful_date import *
 from pyomo.environ import *
 from pyomo.gdp import *
 import pytz
 import math
+import uuid
 
 fmt_date = lambda d: d.astimezone(pytz.timezone("UTC")).strftime("%m/%d/%Y, %H:%M:%S")
 
@@ -208,7 +204,7 @@ class ScheduleBlockRule(rrule):
         latest_time: Optional[time] = None,
         break_duration_before: Optional[int] = 0,
         break_duration_after: Optional[int] = 0,
-        **kwargs
+        **kwargs,
     ) -> None:
         self.block_duration = block_duration
         self.max_blocks = max_blocks
@@ -300,7 +296,9 @@ class ScheduleBlockRule(rrule):
                 # Break before
                 if self.break_duration_before > 0:
                     end = self.last_end + timedelta(minutes=self.break_duration_before)
-                    events.append(Event(start=self.last_end, end=end, summary="Break"))
+                    events.append(
+                        Event(start=self.last_end, end=end, summary="Break Before")
+                    )
                     self.last_end = end
 
                 # Block
@@ -311,7 +309,9 @@ class ScheduleBlockRule(rrule):
                 # Break after
                 if self.break_duration_after > 0:
                     end = self.last_end + timedelta(minutes=self.break_duration_after)
-                    events.append(Event(start=self.last_end, end=end, summary="Break"))
+                    events.append(
+                        Event(start=self.last_end, end=end, summary="Break After")
+                    )
                     self.last_end = end
                 yield events
                 self._block_count[start_time.date()] += 1
@@ -320,13 +320,26 @@ class ScheduleBlockRule(rrule):
 
 
 def schedule_tasks(
-    calendar: GoogleCalendar,
+    feazy_calendar: GoogleCalendar,
     availabilities: List[Tuple[datetime, datetime]],
     tasks: TaskGraph,
     schedule_rules: Dict[TaskDifficulty, ScheduleBlockRule],
     priority: Optional[List[TaskDifficulty]] = None,
 ):
     """Schedule tasks according to schedule_rules and availabilities"""
+    # Get all events on the feazy calendar in the availibity time range
+    feazy_events = []
+    these_events = feazy_calendar.get_events(
+        availabilities[0][0],
+        availabilities[-1][1],
+        order_by="startTime",
+        single_events=True,
+        showDeleted=False,
+    )
+    for event in these_events:
+        # Exclude transparent events
+        feazy_events.append(event)
+
     # Make sure availabilities are sorted and queued up
     availabilities.sort(key=lambda dates: dates[0])
     availability_queue = Queue()
@@ -343,6 +356,7 @@ def schedule_tasks(
     all_tasks.sort(key=lambda t: t.early_start)
     for task in all_tasks:
         task_queues[task.difficulty].put(task)
+        task.total_time_spent = 0  # Time spent on task in minutes
     while (
         not (all([q.empty() for q in task_queues.values()]))
         and not availability_queue.empty()
@@ -354,7 +368,7 @@ def schedule_tasks(
             # Get the task
             if task_queue.empty():
                 continue
-            else:
+            elif task.total_time_spent >= task.duration:
                 task = task_queue.get(block=True)
 
             # Get the next block if it exists
@@ -365,7 +379,22 @@ def schedule_tasks(
                 continue
 
             # Schedule the block
-            events = schedule_event(calendar, next_events, task)
+            for event in next_events:
+                if event.summary not in ["Break Before", "Break After"]:
+
+                    event.summary = task.description
+                    task.total_time_spent += (
+                        event.end - event.start
+                    ).total_seconds() / 60
+                event.event_id = uuid.uuid4().hex
+                # elif event.summary == "Break Before":
+                #     event.event_id = base32_crockford.normalize(
+                #         "breakbefore" + task.task_id
+                #     ).lower()
+                # elif event.summary == "Break After":
+                #     event.event_id =
+
+            events = schedule_event(feazy_calendar, feazy_events, next_events)
             events.sort()
 
             # Go to to next availability if at end of current availability
@@ -377,6 +406,10 @@ def schedule_tasks(
                 potential_events = _get_potential_blocks(
                     current_availability, schedule_rules
                 )
+    unscheduled_count = sum(
+        [q.qsize if type(q) == int else q.qsize() for q in task_queues.values()]
+    )
+    print("Number of unscheduled tasks:", unscheduled_count)
 
 
 def _get_potential_blocks(
@@ -390,11 +423,25 @@ def _get_potential_blocks(
 
 
 def schedule_event(
-    calendar: GoogleCalendar, block: List[Event], task: Task
+    calendar: GoogleCalendar, feazy_events: List[Event], block: List[Event]
 ) -> List[Event]:
     for event in block:
-        print(event)
+        existing = check_existing_events(event, feazy_events)
+        if existing:
+            existing.start = event.start
+            existing.end = event.end
+            calendar.update_event(existing)
+        else:
+            calendar.add_event(event)
     return block
+
+
+def check_existing_events(
+    event: Event, existing_events: List[Event]
+) -> Union[None, Event]:
+    for existing in existing_events:
+        if event.event_id == existing.event_id:
+            return existing
 
 
 def create_pyomo_optimization_model(tasks: TaskGraph) -> Model:

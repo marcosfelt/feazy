@@ -46,7 +46,7 @@ def main_cpm():
     # print(tasks)
 
 
-def main_optimization():
+def main_optimization(feazy_calendar_id: str):
     # Read in tasks and dependencies
     task_list = read_file("data/tasks.txt")
     dependencies = read_file("data/dependencies.txt")
@@ -77,7 +77,10 @@ def main_optimization():
     all_calendars = get_calendars(
         base_calendar,
         only_selected=True,
-        exclude=["jc1o00r4ve65t348l20l2q0090ken3q7@import.calendar.google.com"],
+        exclude=[
+            "jc1o00r4ve65t348l20l2q0090ken3q7@import.calendar.google.com",
+            feazy_calendar_id,
+        ],
     )
     timezone = pytz.timezone("UTC")
     start_time = timezone.localize((Jan / 24 / 2022)[00:00])
@@ -115,8 +118,9 @@ def main_optimization():
             dtstart=dummy_start,
         ),
     }
+    feazy_calendar = GoogleCalendar(feazy_calendar_id)
     schedule_tasks(
-        calendar=base_calendar,
+        feazy_calendar=feazy_calendar,
         availabilities=availabilities,
         tasks=tasks,
         schedule_rules=rules,
@@ -124,6 +128,6 @@ def main_optimization():
 
 
 if __name__ == "__main__":
-    main_optimization()
+    main_optimization("n4j3l032kr821t4dvshof3rb74@group.calendar.google.com")
 
     # main_optimization()

@@ -15,7 +15,14 @@ class TaskDifficulty(Enum):
 
 
 class Task(Node):
-    """Representation of a task"""
+    """Representation of a task
+
+    Arguments
+    ---------
+    duration : int
+        Taks duration in minutes.
+
+    """
 
     def __init__(
         self,
