@@ -38,21 +38,25 @@ min(project_duration-total_slack)
 # s.t. tau_i
 
 """
-from .task import TaskGraph
-from datetime import datetime
-from typing import List, Union, Tuple, Optional
+from queue import LifoQueue, Queue
+from re import I
+from tabnanny import check
+from tracemalloc import start
+
+from numpy import block
+from .task import Task, TaskGraph, TaskDifficulty
+from datetime import datetime, time, timedelta, date
+from typing import List, Union, Tuple, Optional, Dict
 from gcsa.google_calendar import GoogleCalendar, Event
+from gcsa.event import Transparency
+from dateutil.rrule import rrule, WEEKLY, DAILY
 from beautiful_date import *
 from pyomo.environ import *
 from pyomo.gdp import *
 import pytz
-
+import math
 
 fmt_date = lambda d: d.astimezone(pytz.timezone("UTC")).strftime("%m/%d/%Y, %H:%M:%S")
-
-
-class Rules:
-    pass
 
 
 def get_calendars(
@@ -78,36 +82,21 @@ def get_calendars(
     return all_calendars
 
 
-def handle_recurrence(event: Event, earliest_time: datetime) -> None:
-    if event.recurrence and event.start < earliest_time:
-        start_time = datetime(
-            earliest_time.year,
-            earliest_time.month,
-            earliest_time.day,
-            event.start.hour,
-            event.start.minute,
-            tzinfo=event.start.tzinfo,
-        )
-        end_time = datetime(
-            earliest_time.year,
-            earliest_time.month,
-            earliest_time.day,
-            event.end.hour,
-            event.end.minute,
-            tzinfo=event.end.tzinfo,
-        )
-        event.start = start_time
-        event.end = end_time
-
-
 def get_availability(
     calendars: Union[GoogleCalendar, List[GoogleCalendar]],
     start_time: datetime,
     end_time: datetime,
+    transparent_as_free: Optional[bool] = True,
+    split_across_days: Optional[bool] = True,
 ) -> List[Tuple[datetime, datetime]]:
     """Get availability in a particular time range
 
-    Ideally focus on one day for this to work best
+    Arguments
+    ----------
+    transparent_as_free : bool
+        Events that do not block time on the calendar are marked as available.
+    split_across_days : bool
+        Break availabilities that span across days at midnight
 
     Returns availabilities represented as list of tuples of start and end times
     """
@@ -119,39 +108,297 @@ def get_availability(
         these_events = calendar.get_events(
             start_time,
             end_time,
-            # order_by="startTime",
-            # single_events=False,
+            order_by="startTime",
+            single_events=True,
+            showDeleted=False,
         )
         for event in these_events:
-            handle_recurrence(event, earliest_time=start_time)
+            # Exclude transparent events
+            if event.transparency == Transparency.TRANSPARENT and transparent_as_free:
+                continue
             events.append(event)
 
-    # Sort events by time
+    # Sort events by increasing time
     events.sort()
-    for event in events:
-        print(event)
 
     # Specify availability as a list of times where there aren't events
     availabilities = []
-    latest_end = start_time
+    if start_time < events[0].start:
+        availability = (
+            _split_across_days((start_time, events[0].start))
+            if split_across_days
+            else [(start_time, events[0].start)]
+        )
+        availabilities.extend(availability)
+        latest_end = events[0].start
+    else:
+        latest_end = start_time
     for prev_event, next_event in zip(events, events[1:]):
         bookend = prev_event.end == next_event.start
-        if prev_event.end > latest_end and not bookend:
-            availabilities.append((prev_event.end, next_event.start))
-            latest_end = event.end
+        is_overlap = next_event.start < prev_event.end
+        if prev_event.end > latest_end and not bookend and not is_overlap:
+            availability = (
+                _split_across_days((prev_event.end, next_event.start))
+                if split_across_days
+                else [(prev_event.end, next_event.start)]
+            )
+            availabilities.extend(availability)
+        if prev_event.end > latest_end:
+            latest_end = prev_event.end
+    if events[-1].end < end_time:
+        availability = (
+            _split_across_days((events[-1].end, end_time))
+            if split_across_days
+            else [(events[-1].end, end_time)]
+        )
+        availabilities.extend(availability)
 
     return availabilities
 
 
-def schedule_tasks(
-    calendar, tasks: TaskGraph, start_time: datetime, schedule_rules: Rules
-):
-    """Schedule tasks starting from start_time according to schedule_rules"""
+def _split_across_days(
+    availability: Tuple[datetime, datetime]
+) -> List[Tuple[datetime, datetime]]:
+    """Split an availability window at midnight each day"""
 
-    pass
+    dt = availability[1].day - availability[0].day
+    availabilities = []
+    if dt >= 1:
+        last = availability[0]
+        for _ in range(dt):
+            next = last + timedelta(days=1)
+            next = next.replace(hour=0, minute=0, second=0)
+            availabilities.append((last, next))
+            last = next
+        if availability[1] > last:
+            availabilities.append((last, availability[1]))
+    else:
+        availabilities = [availability]
+    return availabilities
+
+
+class ScheduleBlockRule(rrule):
+    """Rules for blocks on schedules. Only daily for now
+
+    Arguments
+    ---------
+    block_duration : int
+        The amount of time in minutes in a single block
+    max_blocks: int, optional
+        The maximum number of blocks in a period. So if `max_blocks=2`
+        and `freq=WEEKLY`, a maximum two blocks can be scheduled per week.
+        Defaults to 1.
+    earliest_time : datetime.time, optional
+        The earliest time a block can be scheduled in a given day. Defaults to 9 AM UTC.
+    latest_time : datetime.time, optional
+        The latest time a block can be scheduled in a given day. Defaults to 7 PM UTC.
+    break_duration_before : int, optional
+        Duration of break before block in mintues. Defaults to 0 (i.e., no break)
+    break_duration : int, optional
+        Duration of break after block in mintues. Defaults to 0 (i.e., no break)
+    **kwargs
+        See https://dateutil.readthedocs.io/en/stable/rrule.html#classes
+    """
+
+    def __init__(
+        self,
+        block_duration: int,
+        max_blocks: Optional[int] = 1,
+        earliest_time: Optional[time] = None,
+        latest_time: Optional[time] = None,
+        break_duration_before: Optional[int] = 0,
+        break_duration_after: Optional[int] = 0,
+        **kwargs
+    ) -> None:
+        self.block_duration = block_duration
+        self.max_blocks = max_blocks
+        self.break_duration_before = break_duration_before
+        self.break_duration_after = break_duration_after
+        timezone = pytz.timezone("UTC")
+        self._earliest_time = (
+            timezone.localize(time(hour=9, minute=0))
+            if earliest_time is None
+            else earliest_time
+        )
+        self._latest_time = (
+            timezone.localize(time(hour=17, minute=0))
+            if latest_time is None
+            else latest_time
+        )
+        self._block_count = {}
+        # Cache for speed
+        if kwargs.get("cache", None):
+            kwargs["cache"] = True
+        super().__init__(freq=DAILY, **kwargs)
+
+    @property
+    def earliest_time(self) -> time:
+        return self._earliest_time
+
+    @earliest_time.setter
+    def earliest_time(self, t: time):
+        if self.latest_time is not None:
+            assert t < self.latest_time
+        self._earliest_time = t
+
+    @property
+    def latest_time(self) -> time:
+        return self._latest_time
+
+    @latest_time.setter
+    def latest_time(self, t: time):
+        if self.earliest_time is not None:
+            assert t > self.earliest_time
+        self._latest_time = t
+
+    def blocks_between(
+        self, start_time: datetime, end_time: datetime
+    ) -> List[Optional[Event]]:
+
+        # Check if times within early/late times
+        earliest_time = datetime.combine(
+            start_time.date(), self.earliest_time, tzinfo=start_time.tzinfo
+        )
+        if start_time < earliest_time:
+            start_time = earliest_time
+
+        if start_time > end_time:
+            return []
+        latest_time = datetime.combine(
+            start_time.date(), self.latest_time, tzinfo=start_time.tzinfo
+        )
+        if end_time > latest_time:
+            end_time = latest_time
+
+        # Check for recurrence rule
+        item = self.before(start_time.replace(tzinfo=None), inc=True)
+        check_rule = False
+        if item:
+            if item.date() == start_time.date():
+                check_rule = True
+
+        # Check for max block counts
+        if not self._block_count.get(start_time.date()):
+            self._block_count[start_time.date()] = 0
+        check_count = self._block_count[start_time.date()] < self.max_blocks
+
+        if check_rule and check_count:
+            # Total time in minutes
+            dt = (end_time - start_time).total_seconds() / 60
+            # Block time
+            block_and_break = (
+                self.block_duration
+                + self.break_duration_before
+                + self.break_duration_after
+            )
+            # Always round down for number of blocks
+            num_blocks = math.floor(dt / block_and_break)
+
+            self.last_end = start_time
+            for _ in range(num_blocks):
+                events = []
+                # Break before
+                if self.break_duration_before > 0:
+                    end = self.last_end + timedelta(minutes=self.break_duration_before)
+                    events.append(Event(start=self.last_end, end=end, summary="Break"))
+                    self.last_end = end
+
+                # Block
+                end = self.last_end + timedelta(minutes=self.block_duration)
+                events.append(Event(start=self.last_end, end=end, summary=""))
+                self.last_end = end
+
+                # Break after
+                if self.break_duration_after > 0:
+                    end = self.last_end + timedelta(minutes=self.break_duration_after)
+                    events.append(Event(start=self.last_end, end=end, summary="Break"))
+                    self.last_end = end
+                yield events
+                self._block_count[start_time.date()] += 1
+        else:
+            return []
+
+
+def schedule_tasks(
+    calendar: GoogleCalendar,
+    availabilities: List[Tuple[datetime, datetime]],
+    tasks: TaskGraph,
+    schedule_rules: Dict[TaskDifficulty, ScheduleBlockRule],
+    priority: Optional[List[TaskDifficulty]] = None,
+):
+    """Schedule tasks according to schedule_rules and availabilities"""
+    # Make sure availabilities are sorted and queued up
+    availabilities.sort(key=lambda dates: dates[0])
+    availability_queue = Queue()
+    for availibility in availabilities:
+        availability_queue.put(availibility)
+
+    # Set default priorities
+    if priority is None:
+        priority = [TaskDifficulty.HARD, TaskDifficulty.MEDIUM, TaskDifficulty.EASY]
+
+    # Schedule tasks
+    task_queues = {p: Queue() for p in priority}
+    all_tasks = tasks.all_tasks
+    all_tasks.sort(key=lambda t: t.early_start)
+    for task in all_tasks:
+        task_queues[task.difficulty].put(task)
+    while (
+        not (all([q.empty() for q in task_queues.values()]))
+        and not availability_queue.empty()
+    ):
+        # For each new availability, fill with tasks in priority order
+        current_availability = availability_queue.get(block=True)
+        potential_events = _get_potential_blocks(current_availability, schedule_rules)
+        for difficulty, task_queue in task_queues.items():
+            # Get the task
+            if task_queue.empty():
+                continue
+            else:
+                task = task_queue.get(block=True)
+
+            # Get the next block if it exists
+            try:
+                next_events = next(potential_events[difficulty])
+
+            except StopIteration:
+                continue
+
+            # Schedule the block
+            events = schedule_event(calendar, next_events, task)
+            events.sort()
+
+            # Go to to next availability if at end of current availability
+            if events[-1].end >= current_availability[1]:
+                break
+            # Adjust availability and blocks for subsequent priority/difficulty levels
+            else:
+                current_availability = (events[-1].end, current_availability[1])
+                potential_events = _get_potential_blocks(
+                    current_availability, schedule_rules
+                )
+
+
+def _get_potential_blocks(
+    availability: Tuple[datetime, datetime],
+    schedule_rules: Dict[TaskDifficulty, ScheduleBlockRule],
+):
+    return {
+        d: schedule_rule.blocks_between(availability[0], availability[1])
+        for d, schedule_rule in schedule_rules.items()
+    }
+
+
+def schedule_event(
+    calendar: GoogleCalendar, block: List[Event], task: Task
+) -> List[Event]:
+    for event in block:
+        print(event)
+    return block
 
 
 def create_pyomo_optimization_model(tasks: TaskGraph) -> Model:
+    """Create Pyomo optimization model"""
     model = ConcreteModel()
 
     # Tasks is a two dimensional set of (j,m) constructed from dictionary keys
@@ -243,30 +490,3 @@ def schedule_solve_neos(model: Model, tasks: TaskGraph) -> None:
 def optimize_schedule(tasks: TaskGraph) -> None:
     model = create_pyomo_optimization_model(tasks)
     schedule_solve_neos(model, tasks)
-
-
-# def formulate_optimization(
-#     tasks: TaskGraph,
-#     dependencies: Graph,
-# ):
-#     pass
-#     # Specify decision variables for early and late start times for tasks
-
-
-#     ### Constraints
-
-#     # Specify tasks cannot overlap
-
-#     # Specify task dependencies
-
-#     # Slack must be greater than 0 all tasks
-
-#     # Tasks must have to be happen deadlines
-
-#     ### Set objective
-
-#     # Calculate total time
-
-#     # Calculate total slack
-
-#     ### Translate optimization results back to tasks

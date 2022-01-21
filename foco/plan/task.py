@@ -163,5 +163,8 @@ class TaskGraph(Graph):
         return repr
 
     @property
-    def all_tasks(self):
-        return [t for t in self._nodes.values()]
+    def all_tasks(self, task_difficulty: Optional[TaskDifficulty] = None) -> List[Task]:
+        if not task_difficulty:
+            return [t for t in self._nodes.values()]
+        else:
+            return [t for t in self._nodes.values() if t.difficulty == task_difficulty]

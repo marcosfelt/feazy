@@ -1,7 +1,19 @@
-from foco.plan import Task, TaskGraph, TaskDifficulty, read_file, optimize_schedule
+from tracemalloc import start
+from foco.plan import (
+    Task,
+    TaskGraph,
+    TaskDifficulty,
+    read_file,
+    optimize_schedule,
+    ScheduleBlockRule,
+    schedule_tasks,
+    get_calendars,
+    get_availability,
+)
+from gcsa.google_calendar import GoogleCalendar
+import pytz
+from beautiful_date import *
 import random
-
-from foco.plan.schedule import get_calendars
 
 
 def main_cpm():
@@ -58,34 +70,60 @@ def main_optimization():
         tasks.add_dependency(dependency[0], dependency[1])
 
     # Optimize schedule using pyomo
-    optimize_schedule(tasks)
+    # optimize_schedule(tasks)
 
-    # Print out final task group
-    print(tasks)
-
-
-if __name__ == "__main__":
-    from foco.plan import get_availability
-    from beautiful_date import *
-    from gcsa.google_calendar import GoogleCalendar
-    import pytz
-
-    base = GoogleCalendar("kobi.c.f@gmail.com")
+    # Get availability
+    base_calendar = GoogleCalendar("kobi.c.f@gmail.com")
     all_calendars = get_calendars(
-        base,
+        base_calendar,
         only_selected=True,
         exclude=["jc1o00r4ve65t348l20l2q0090ken3q7@import.calendar.google.com"],
     )
     timezone = pytz.timezone("UTC")
-    start_time = timezone.localize((Jan / 19 / 2022)[00:00])
-    end_time = start_time + 1 * days
+    start_time = timezone.localize((Jan / 24 / 2022)[00:00])
+    end_time = start_time + 5 * days
     availabilities = get_availability(
-        all_calendars, start_time=start_time, end_time=end_time
+        all_calendars, start_time=start_time, end_time=end_time, split_across_days=True
     )
+    print("Availabilities")
     for availability in availabilities:
         fmt_date = lambda d: d.astimezone(pytz.timezone("UTC")).strftime(
             "%m/%d/%Y, %H:%M:%S"
         )
         print(fmt_date(availability[0]), "-", fmt_date(availability[1]))
+
+    # Schedule tasks
+    dummy_start = (start_time - 1 * days).date()
+    rules = {
+        TaskDifficulty.HARD: ScheduleBlockRule(
+            block_duration=45,
+            break_duration_after=15,
+            break_duration_before=15,
+            max_blocks=2,
+            dtstart=dummy_start,
+        ),
+        TaskDifficulty.MEDIUM: ScheduleBlockRule(
+            block_duration=25,
+            break_duration_after=5,
+            max_blocks=8,
+            dtstart=dummy_start,
+        ),
+        TaskDifficulty.EASY: ScheduleBlockRule(
+            block_duration=25,
+            break_duration_after=5,
+            max_blocks=8,
+            dtstart=dummy_start,
+        ),
+    }
+    schedule_tasks(
+        calendar=base_calendar,
+        availabilities=availabilities,
+        tasks=tasks,
+        schedule_rules=rules,
+    )
+
+
+if __name__ == "__main__":
+    main_optimization()
 
     # main_optimization()
