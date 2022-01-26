@@ -7,7 +7,9 @@ The problem is framed in terms of the total number of work hours end to end
 starting at 0 and ending at T, the total time spent on all projects in the horizon.
 
 There are three types of tasks: intense focus, medium focus and low energy tasks. Each task has an estimated duration
-and some have a deadline.
+and some have a start or deadline date.
+
+The idea of my formulation is to think of 
 
 Objectives:
 - Minimize total project duration 
@@ -16,7 +18,7 @@ Objectives:
 Decision variables:
 - Early start times
 - Late start times
-both with bounds based on the deadlines
+both with bounds based on the start and deadlines
 
 Constraints:
 - Tasks cannot overlap
@@ -381,18 +383,11 @@ def schedule_tasks(
             # Schedule the block
             for event in next_events:
                 if event.summary not in ["Break Before", "Break After"]:
-
                     event.summary = task.description
                     task.total_time_spent += (
                         event.end - event.start
                     ).total_seconds() / 60
-                event.event_id = uuid.uuid4().hex
-                # elif event.summary == "Break Before":
-                #     event.event_id = base32_crockford.normalize(
-                #         "breakbefore" + task.task_id
-                #     ).lower()
-                # elif event.summary == "Break After":
-                #     event.event_id =
+                event.event_id = uuid
 
             events = schedule_event(feazy_calendar, feazy_events, next_events)
             events.sort()
@@ -444,17 +439,27 @@ def check_existing_events(
             return existing
 
 
-def create_pyomo_optimization_model(tasks: TaskGraph) -> Model:
+convert_time_to_minutes = lambda start, time: (time - start).total_seconds / 60
+
+
+def create_pyomo_optimization_model(
+    start_time: datetime,
+    tasks: TaskGraph,
+    existing_events: List[Event],
+    schedule_rules: Dict[TaskDifficulty, ScheduleBlockRule],
+) -> Model:
     """Create Pyomo optimization model"""
+
     model = ConcreteModel()
 
+    #### Setup ####
     # Tasks is a two dimensional set of (j,m) constructed from dictionary keys
     task_keys = [(task.task_id, task.difficulty) for task in tasks.all_tasks]
     model.TASKS = Set(initialize=task_keys, dimen=2)
 
-    # The set of jobs is constructed from a python set
-    unique_tasks = list(set([j for (j, _) in model.TASKS]))
-    model.JOBS = Set(initialize=unique_tasks)
+    # The set of events is constructed from a python set
+    unique_tasks = list(set([e for (e, _) in model.TASKS]))
+    model.EVENTS = Set(initialize=unique_tasks)
 
     # Set of LEVELS is constructed from a python set
     unique_LEVELS = list(set([l for (_, l) in model.TASKS]))
@@ -470,9 +475,7 @@ def create_pyomo_optimization_model(tasks: TaskGraph) -> Model:
             ]
         )
     )
-    model.TASK_ORDER = Set(
-        initialize=dependencies,
-    )
+    model.TASK_ORDER = Set(initialize=dependencies)
 
     # The set of disjunctions (i.e., no time overlaps) is cross-product of jobs, jobs and LEVELS
     model.DISJUNCTIONS = Set(
@@ -483,40 +486,96 @@ def create_pyomo_optimization_model(tasks: TaskGraph) -> Model:
         and (k, l) in model.TASKS,
     )
 
-    # Load duration data into a model parameter for later acces
+    # Load duration data into a model parameter
     model.dur = Param(model.TASKS, initialize=lambda model, j, m: tasks[j].duration)
 
-    # Establish an upper bound on makespan
-    ub = sum([model.dur[j, m] for (j, m) in model.TASKS])
+    # Total time
+    total_time = sum([model.dur[j, m] for (j, m) in model.TASKS])
 
-    # Create decision variables
-    model.makespan = Var(bounds=(0, ub))
-    model.start = Var(model.TASKS, bounds=(0, ub), domain=PositiveIntegers)
+    #### Decision Variables ####
+    lb = [  # Bound by 0 or specified earliest start for tasks
+        0
+        if task.earliest_start is None
+        else convert_time_to_minutes(task.earliest_start)
+        for task in tasks.all_tasks
+    ]
+    ub = [
+        total_time if task.deadline is None else convert_time_to_minutes(task.deadline)
+        for task in tasks.all_tasks
+    ]
+    model.early_start = Var(model.TASKS, bounds=(lb, ub), domain=PositiveIntegers)
+    model.late_start = Var(model.TASKS, bounds=(lb, ub), domain=PositiveIntegers)
 
-    # Create ojective
-    model.objective = Objective(expr=model.makespan, sense=minimize)
+    # Calculate slack
+    total_slack = sum(
+        [model.late_start[e, t] - model.early_start[e, t] for (e, t) in model.TASKS]
+    )
 
+    #### Objectives ####
+    model.early_finish = Var(bounds=(0, total_time))
+    model.slack = Var(bounds=(0, total_slack))
+    model.objective = Objective(expr=model.early_finish - model.slack, sense=minimize)
+
+    #### Constraints ####
     # Constraint that tasks must finish before end
     model.finish = Constraint(
         model.TASKS,
-        rule=lambda model, j, m: model.start[j, m] + model.dur[j, m] <= model.makespan,
+        rule=lambda model, j, m: model.early_start[j, m] + model.dur[j, m]
+        <= model.early_finish,
     )
 
     # Constraint for task dependencies
-    model.preceding = Constraint(
+    model.preceding_early_start = Constraint(
         model.TASK_ORDER,
-        rule=lambda model, j, m, k, n: model.start[j, m] + model.dur[j, m]
-        <= model.start[k, n],
+        rule=lambda model, j, m, k, n: model.early_start[j, m] + model.dur[j, m]
+        <= model.early_start[k, n],
+    )
+    model.preceding_late_start = Constraint(
+        model.TASK_ORDER,
+        rule=lambda model, j, m, k, n: model.late_start[j, m] + model.dur[j, m]
+        <= model.late_start[k, n],
     )
 
     # Constraint for non-overalapping tasks
-    model.disjunctions = Disjunction(
+    model.disjunctions_early_start = Disjunction(
         model.DISJUNCTIONS,
-        rule=lambda model, j, k, m: [
-            model.start[j, m] + model.dur[j, m] <= model.start[k, m],
-            model.start[k, m] + model.dur[k, m] <= model.start[j, m],
+        rule=lambda model, e, f, l: [
+            model.early_start[e, l] + model.dur[e, l] <= model.early_start[f, l],
+            model.early_start[f, l] + model.dur[f, l] <= model.early_start[e, l],
         ],
     )
+    model.disjunctions_late_start = Disjunction(
+        model.DISJUNCTIONS,
+        rule=lambda model, e, f, l: [
+            model.late_start[e, l] + model.dur[e, l] <= model.late_start[f, l],
+            model.late_start[f, l] + model.dur[f, l] <= model.late_start[e, l],
+        ],
+    )
+
+    # Slack constraint
+    model.slacks = Constraint(
+        model.TASKS,
+        rule=lambda model, j, m: model.late_start[j, m] - model.early_start[j, m] >= 0,
+    )
+
+    # Existing event constraint
+    model.existing_events = ConstraintList()
+    for st in [model.early_start, model.late_start]:
+        for event in existing_events:
+            model.existing_events.add(
+                model.TASKS,
+                rule=lambda model, t, d: st[t, d]
+                < convert_time_to_minutes(start_time, event.start),
+            )
+            model.existing_events.add(
+                model.TASKS,
+                rule=lambda model, t, d: st[t, d] + model.dur[t, d]
+                > convert_time_to_minutes(start_time, event.end),
+            )
+
+    # Schedule rules
+    for difficulty, rule in schedule_rules.items():
+        pass
 
     # Transform into higher dimensional space
     TransformationFactory("gdp.hull").apply_to(model)
@@ -531,7 +590,7 @@ def schedule_solve_neos(model: Model, tasks: TaskGraph) -> None:
 
     # Update task start times
     for j, m in model.TASKS:
-        tasks[j].early_start = model.start[j, m]()
+        tasks[j].early_start = model.early_start[j, m]()
 
 
 def optimize_schedule(tasks: TaskGraph) -> None:

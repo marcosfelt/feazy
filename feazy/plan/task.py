@@ -1,17 +1,16 @@
 from __future__ import annotations
-
-# from .schedule import TaskTimeConverter
+from uuid import uuid4
 from .utils import Node, Graph, GraphDirection
-from typing import List, Optional, Tuple
-from datetime import date, datetime
+from typing import List, Optional, Tuple, Union
+from datetime import date, datetime, time
 import warnings
 from enum import Enum
 
 
 class TaskDifficulty(Enum):
-    HARD = "hard"
-    MEDIUM = "medium"
-    EASY = "easy"
+    HARD = "Hard"
+    MEDIUM = "Medium"
+    EASY = "Easy"
 
 
 class Task(Node):
@@ -19,26 +18,42 @@ class Task(Node):
 
     Arguments
     ---------
+    difficulty : `TaskDifficulty`
+        Difficulty level of the task
     duration : int
         Taks duration in minutes.
+    description : str
+        Description of the task
+    task_id : str, optional
+        A unique identifier for the task. By default assigns a UUID4.
+    earliest_start : date or datetime, optional
+        The earliest time at which this task could start. Used in by scheduling algorithms.
+        If not specified, defaults to tomorrow.
+    deadline : date or datetime, optional
+        The deadline for the task. If not specified, no deadline set and
+        scheduling algorithm free to set finish of task.
 
     """
 
     def __init__(
         self,
-        task_id: str,
         difficulty: TaskDifficulty,
         duration: int,
-        description: Optional[str] = None,
-        deadline: Optional[date] = None,
+        description: Optional[str],
+        task_id: Optional[str] = None,
+        earliest_start: Union[date, datetime] = None,
+        deadline: Union[date, datetime] = None,
     ) -> None:
+        if task_id is None:
+            task_id = uuid4()
         super().__init__(val=task_id)
         self._difficulty = difficulty
         self.duration = duration
         self.description = description
         self._early_start: int = 0
         self._late_start: int = 0
-        self._deadline: Optional[date] = deadline
+        self._earliest_start = earliest_start
+        self._deadline = deadline
         self._scheduled_start: datetime = None
         self._scheduled_finish: datetime = None
 
@@ -72,13 +87,24 @@ class Task(Node):
         return self._late_start + self.duration
 
     @property
+    def earliest_start(self) -> datetime:
+        if type(self._earliest_start) == date:
+            return datetime.combine(
+                self._earliest_start, time(hour=0, minute=0, second=0)
+            )
+        else:
+            return self._earliest_start
+
+    @property
     def deadline(self) -> date:
-        """Deadline date"""
-        return self._deadline
+        if type(self._deadline) == date:
+            return datetime.combine(self._deadline, time(hour=0, minute=0, second=0))
+        else:
+            return self._deadline
 
     @deadline.setter
     def deadline(self, day: date):
-        if day > date.today():
+        if day < date.today():
             warnings.warn(f"{day} is before the today.")
         self._deadline = day
 

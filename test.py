@@ -1,5 +1,5 @@
 from tracemalloc import start
-from foco.plan import (
+from feazy.plan import (
     Task,
     TaskGraph,
     TaskDifficulty,
