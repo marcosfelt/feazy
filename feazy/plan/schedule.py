@@ -40,19 +40,19 @@ min(project_duration-total_slack)
 # s.t. tau_i
 
 """
-from queue import Queue
+
 from .task import Task, TaskGraph, TaskDifficulty
-from datetime import datetime, time, timedelta, date
-from typing import List, Union, Tuple, Optional, Dict
 from gcsa.google_calendar import GoogleCalendar, Event
 from gcsa.event import Transparency
 from dateutil.rrule import rrule, DAILY
 from beautiful_date import *
 from pyomo.environ import *
 from pyomo.gdp import *
+from datetime import datetime, time, timedelta, date
+from typing import List, Union, Tuple, Optional, Dict
+from queue import Queue
 import pytz
 import math
-import uuid
 
 fmt_date = lambda d: d.astimezone(pytz.timezone("UTC")).strftime("%m/%d/%Y, %H:%M:%S")
 
@@ -84,8 +84,8 @@ def get_availability(
     calendars: Union[GoogleCalendar, List[GoogleCalendar]],
     start_time: datetime,
     end_time: datetime,
-    transparent_as_free: Optional[bool] = True,
-    split_across_days: Optional[bool] = True,
+    transparent_as_free: bool = True,
+    split_across_days: bool = True,
 ) -> List[Tuple[datetime, datetime]]:
     """Get availability in a particular time range
 
@@ -321,122 +321,25 @@ class ScheduleBlockRule(rrule):
             return []
 
 
-def schedule_tasks(
-    feazy_calendar: GoogleCalendar,
-    availabilities: List[Tuple[datetime, datetime]],
+def breakdown_tasks(
+    tasks: TaskGraph, schedule_rules: Dict[TaskDifficulty, ScheduleBlockRule]
+) -> TaskGraph:
+    """Breakdown tasks into smaller tasks + breaks according to schedule rules"""
+    pass
+
+
+def _optimize_schedule(
     tasks: TaskGraph,
+    availabilities: List[Tuple[datetime, datetime]],
     schedule_rules: Dict[TaskDifficulty, ScheduleBlockRule],
-    priority: Optional[List[TaskDifficulty]] = None,
-):
-    """Schedule tasks according to schedule_rules and availabilities"""
-    # Get all events on the feazy calendar in the availibity time range
-    feazy_events = []
-    these_events = feazy_calendar.get_events(
-        availabilities[0][0],
-        availabilities[-1][1],
-        order_by="startTime",
-        single_events=True,
-        showDeleted=False,
-    )
-    for event in these_events:
-        # Exclude transparent events
-        feazy_events.append(event)
-
-    # Make sure availabilities are sorted and queued up
-    availabilities.sort(key=lambda dates: dates[0])
-    availability_queue = Queue()
-    for availibility in availabilities:
-        availability_queue.put(availibility)
-
-    # Set default priorities
-    if priority is None:
-        priority = [TaskDifficulty.HARD, TaskDifficulty.MEDIUM, TaskDifficulty.EASY]
-
-    # Schedule tasks
-    task_queues = {p: Queue() for p in priority}
-    all_tasks = tasks.all_tasks
-    all_tasks.sort(key=lambda t: t.early_start)
-    for task in all_tasks:
-        task_queues[task.difficulty].put(task)
-        task.total_time_spent = 0  # Time spent on task in minutes
-    while (
-        not (all([q.empty() for q in task_queues.values()]))
-        and not availability_queue.empty()
-    ):
-        # For each new availability, fill with tasks in priority order
-        current_availability = availability_queue.get(block=True)
-        potential_events = _get_potential_blocks(current_availability, schedule_rules)
-        for difficulty, task_queue in task_queues.items():
-            # Get the task
-            if task_queue.empty():
-                continue
-            elif task.total_time_spent >= task.duration:
-                task = task_queue.get(block=True)
-
-            # Get the next block if it exists
-            try:
-                next_events = next(potential_events[difficulty])
-
-            except StopIteration:
-                continue
-
-            # Schedule the block
-            for event in next_events:
-                if event.summary not in ["Break Before", "Break After"]:
-                    event.summary = task.description
-                    task.total_time_spent += (
-                        event.end - event.start
-                    ).total_seconds() / 60
-                event.event_id = uuid
-
-            events = schedule_event(feazy_calendar, feazy_events, next_events)
-            events.sort()
-
-            # Go to to next availability if at end of current availability
-            if events[-1].end >= current_availability[1]:
-                break
-            # Adjust availability and blocks for subsequent priority/difficulty levels
-            else:
-                current_availability = (events[-1].end, current_availability[1])
-                potential_events = _get_potential_blocks(
-                    current_availability, schedule_rules
-                )
-    unscheduled_count = sum(
-        [q.qsize if type(q) == int else q.qsize() for q in task_queues.values()]
-    )
-    print("Number of unscheduled tasks:", unscheduled_count)
-
-
-def _get_potential_blocks(
-    availability: Tuple[datetime, datetime],
-    schedule_rules: Dict[TaskDifficulty, ScheduleBlockRule],
-):
-    return {
-        d: schedule_rule.blocks_between(availability[0], availability[1])
-        for d, schedule_rule in schedule_rules.items()
-    }
-
-
-def schedule_event(
-    calendar: GoogleCalendar, feazy_events: List[Event], block: List[Event]
 ) -> List[Event]:
-    for event in block:
-        existing = check_existing_events(event, feazy_events)
-        if existing:
-            existing.start = event.start
-            existing.end = event.end
-            calendar.update_event(existing)
-        else:
-            calendar.add_event(event)
-    return block
+    # Formulate and solve optimizaton problem
+    model = create_pyomo_optimization_model(tasks, availabilities, schedule_rules)
+    schedule_solve_neos(model)
 
-
-def check_existing_events(
-    event: Event, existing_events: List[Event]
-) -> Union[None, Event]:
-    for existing in existing_events:
-        if event.event_id == existing.event_id:
-            return existing
+    # Convert solved model to events
+    events = post_process_model(model, tasks, availabilities, schedule_rules)
+    return events
 
 
 convert_time_to_minutes = lambda start, time: (time - start).total_seconds / 60
@@ -582,17 +485,85 @@ def create_pyomo_optimization_model(
     return model
 
 
-def schedule_solve_neos(model: Model, tasks: TaskGraph) -> None:
+def post_process_model(
+    model: ConcreteModel,
+    tasks: TaskGraph,
+    availabilities: List[Tuple[datetime, datetime]],
+    schedule_rules: Dict[TaskDifficulty, ScheduleBlockRule],
+) -> List[Event]:
+    pass
+
+
+def schedule_solve_neos(model: Model) -> None:
     # Solve
     solver_manger = SolverManagerFactory("neos")
     solver_manger.solve(model, opt="cplex")
     # SolverFactory('apopt').solve(model)
 
-    # Update task start times
-    for j, m in model.TASKS:
-        tasks[j].early_start = model.early_start[j, m]()
+
+def schedule_events(
+    events: List[Event],
+    calendar: GoogleCalendar,
+    existing_events: List[Event],
+) -> List[Event]:
+    for event in events:
+        existing = check_existing_events(event, existing_events)
+        if existing:
+            existing.start = event.start
+            existing.end = event.end
+            calendar.update_event(existing)
+        else:
+            calendar.add_event(event)
+    return events
 
 
-def optimize_schedule(tasks: TaskGraph) -> None:
-    model = create_pyomo_optimization_model(tasks)
-    schedule_solve_neos(model, tasks)
+def check_existing_events(
+    event: Event, existing_events: List[Event]
+) -> Union[None, Event]:
+    for existing in existing_events:
+        if event.event_id == existing.event_id:
+            return existing
+
+
+def optimize_schedule(
+    tasks: TaskGraph,
+    schedule_rules: Dict[TaskDifficulty, ScheduleBlockRule],
+    start_time: datetime,
+    end_time: datetime,
+    base_calendar: GoogleCalendar,
+    feazy_calendar: GoogleCalendar,
+    exclude_calendar_ids: Optional[List[str]] = None,
+    transparent_as_free: bool = True,
+) -> None:
+    """
+
+    Arguments
+    ---------
+    transparent_as_free: bool, optional
+        Events that do not block time on the calendar are marked as available.
+    """
+    # Breakdown tasks
+    blocks = breakdown_tasks(tasks, schedule_rules)
+
+    # Get availability
+    calendars = get_calendars(base_calendar, exclude=exclude_calendar_ids)
+    availabilities = get_availability(
+        calendars, start_time, end_time, transparent_as_free=transparent_as_free
+    )
+
+    # Solve the internal optimization problem using pyomo
+    new_events = _optimize_schedule(
+        tasks == blocks, availabilities=availabilities, schedule_rules=schedule_rules
+    )
+
+    # Schedule tasks
+    feazy_events = feazy_calendar.get_events(
+        availabilities[0][0],
+        availabilities[-1][1],
+        order_by="startTime",
+        single_events=True,
+        showDeleted=False,
+    )
+    schedule_events(
+        events=new_events, calendar=feazy_calendar, existing_events=feazy_events
+    )
