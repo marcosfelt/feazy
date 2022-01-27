@@ -41,6 +41,9 @@ min(project_duration-total_slack)
 
 """
 
+from operator import index
+
+from feazy.plan.utils import Graph, GraphSearch
 from .task import Task, TaskGraph, TaskDifficulty
 from gcsa.google_calendar import GoogleCalendar, Event
 from gcsa.event import Transparency
@@ -50,9 +53,11 @@ from pyomo.environ import *
 from pyomo.gdp import *
 from datetime import datetime, time, timedelta, date
 from typing import List, Union, Tuple, Optional, Dict
-from queue import Queue
+from queue import LifoQueue, SimpleQueue
 import pytz
 import math
+import numpy as np
+from copy import deepcopy
 
 fmt_date = lambda d: d.astimezone(pytz.timezone("UTC")).strftime("%m/%d/%Y, %H:%M:%S")
 
@@ -321,11 +326,125 @@ class ScheduleBlockRule(rrule):
             return []
 
 
+def find_start_tasks(tasks: TaskGraph) -> List[Task]:
+    """Find start tasks using the adjancency matrix
+
+    I'm sure there's a faster way to do this but this made sense to me
+    """
+    n_tasks = len(tasks._nodes)
+    adjacency_matrix = np.zeros([n_tasks, n_tasks])
+    task_to_index = {task.task_id: i for i, task in enumerate(tasks.all_tasks)}
+    index_to_task = {i: task.task_id for i, task in enumerate(tasks.all_tasks)}
+    for task in tasks.all_tasks:
+        for adj in task.adjacents:
+            adjacency_matrix[
+                task_to_index[task.task_id], task_to_index[adj.task_id]
+            ] = 1
+    start_tasks = []
+    for i in range(n_tasks):
+        if adjacency_matrix[:, i].sum() == 0:
+            start_tasks.append(tasks[index_to_task[i]])
+    return start_tasks
+
+
 def breakdown_tasks(
     tasks: TaskGraph, schedule_rules: Dict[TaskDifficulty, ScheduleBlockRule]
 ) -> TaskGraph:
     """Breakdown tasks into smaller tasks + breaks according to schedule rules"""
-    pass
+    new_tasks = deepcopy(
+        tasks
+    )  # New tasks graph for inserting breaks and broken down blocks
+
+    # Find starting tasks
+    start_tasks = find_start_tasks(tasks)
+
+    # Breakdown tasks
+    visit_queue = LifoQueue()  # LIFO queue (stack) for doing depth first search
+    visited_tasks = []
+    for start_task in start_tasks:
+        for adj in start_task.adjacents:
+            visit_queue.put(adj)
+
+        while not visit_queue.empty():
+            current_task = visit_queue.get(block=True)
+            if current_task not in visited_tasks:
+                schedule_rule = schedule_rules[current_task.difficulty]
+
+                # Insert break before
+                break_before = schedule_rule.break_duration_before
+                if break_before > 0:
+                    new_break = Task(
+                        TaskDifficulty.EASY,
+                        duration=break_before,
+                        description="Break before next task",
+                    )
+                    new_tasks.add_task(new_break)
+                    predecessors_ids = []
+                    for t in new_tasks.graph_search(
+                        start_task.task_id, type=GraphSearch.BFS
+                    ):
+                        if current_task in t.adjacents:
+                            predecessors_ids.append(t.task_id)
+                        elif t == current_task:
+                            break
+
+                    for predecessor_id in predecessors_ids:
+                        new_tasks.remove_dependency(
+                            predecessor_id, current_task.task_id
+                        )
+                        new_tasks.add_dependency(predecessor_id, new_break.task_id)
+                    new_tasks.add_dependency(new_break.task_id, current_task.task_id)
+
+                # Break up task if necessary
+                if current_task.duration > schedule_rule.block_duration:
+                    n_blocks = math.ceil(
+                        schedule_rule.block_duration / current_task.duration
+                    )
+                    new_tasks[
+                        current_task.task_id
+                    ].duration = schedule_rule.block_duration
+                    new_tasks[
+                        current_task.task_id
+                    ].description += f" (Block 1/{n_blocks})"
+                    last_block = new_tasks[current_task.task_id]
+                    for b in range(n_blocks - 1):
+                        new_block = Task(
+                            current_task.task_id,
+                            duration=schedule_rule.block_duration,
+                            description=current_task.description
+                            + f" (Block {b+2}/{n_blocks})",
+                        )
+                        new_tasks.add_task(new_block)
+                        new_tasks.add_dependency(last_block.task_id, new_block.task_id)
+                        last_block = new_block
+                    for adj in current_task.adjacents:
+                        new_tasks.remove_dependency(current_task.task_id, adj.task_id)
+                        new_tasks.add_dependency(last_block.task_id, adj.task_id)
+                else:
+                    last_block = new_tasks[current_task.task_id]
+
+                # Insert break after
+                break_after = schedule_rule.break_duration_after
+                if break_after > 0:
+                    new_break = Task(
+                        TaskDifficulty.EASY,
+                        duration=break_before,
+                        description="Break after previous task",
+                    )
+                    new_tasks.add_task(new_break)
+                    for adj in last_block.adjacents:
+                        new_tasks.remove_dependency(last_block.task_id, adj.task_id)
+                        new_tasks.add_dependency(new_break.task_id, adj.task_id)
+
+                # Add new adjacents
+                for adj in current_task.adjacents:
+                    if adj not in visited_tasks:
+                        visit_queue.put(adj, block=True)
+
+                # Mark current node as visited
+                visited_tasks.append(current_task)
+
+    return new_tasks
 
 
 def _optimize_schedule(
@@ -546,6 +665,11 @@ def optimize_schedule(
     blocks = breakdown_tasks(tasks, schedule_rules)
 
     # Get availability
+    exclude_calendar_ids = (
+        exclude_calendar_ids if exclude_calendar_ids is not None else []
+    )
+    exclude_calendar_ids.append(feazy_calendar.calendar)
+    exclude_calendar_ids = list(set(exclude_calendar_ids))
     calendars = get_calendars(base_calendar, exclude=exclude_calendar_ids)
     availabilities = get_availability(
         calendars, start_time, end_time, transparent_as_free=transparent_as_free
@@ -553,7 +677,7 @@ def optimize_schedule(
 
     # Solve the internal optimization problem using pyomo
     new_events = _optimize_schedule(
-        tasks == blocks, availabilities=availabilities, schedule_rules=schedule_rules
+        tasks=blocks, availabilities=availabilities, schedule_rules=schedule_rules
     )
 
     # Schedule tasks

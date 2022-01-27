@@ -3,7 +3,6 @@ from .schedule import (
     optimize_schedule,
     get_availability,
     ScheduleBlockRule,
-    schedule_tasks,
     get_calendars,
 )
 from .task import Task, TaskGraph, TaskDifficulty

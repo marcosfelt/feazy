@@ -1,1 +1,1 @@
-from foco.plan import *
+from feazy.plan import *

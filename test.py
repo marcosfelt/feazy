@@ -6,7 +6,6 @@ from feazy.plan import (
     read_file,
     optimize_schedule,
     ScheduleBlockRule,
-    schedule_tasks,
     get_calendars,
     get_availability,
 )
@@ -14,6 +13,8 @@ from gcsa.google_calendar import GoogleCalendar
 import pytz
 from beautiful_date import *
 import random
+
+from feazy.plan.schedule import breakdown_tasks
 
 
 def main_cpm():
@@ -73,29 +74,29 @@ def main_optimization(feazy_calendar_id: str):
     # optimize_schedule(tasks)
 
     # Get availability
-    base_calendar = GoogleCalendar("kobi.c.f@gmail.com")
-    all_calendars = get_calendars(
-        base_calendar,
-        only_selected=True,
-        exclude=[
-            "jc1o00r4ve65t348l20l2q0090ken3q7@import.calendar.google.com",
-            feazy_calendar_id,
-        ],
-    )
+    # base_calendar = GoogleCalendar("kobi.c.f@gmail.com")
+    # all_calendars = get_calendars(
+    #     base_calendar,
+    #     only_selected=True,
+    #     exclude=[
+    #         "jc1o00r4ve65t348l20l2q0090ken3q7@import.calendar.google.com",
+    #         feazy_calendar_id,
+    #     ],
+    # )
     timezone = pytz.timezone("UTC")
     start_time = timezone.localize((Jan / 24 / 2022)[00:00])
     end_time = start_time + 5 * days
-    availabilities = get_availability(
-        all_calendars, start_time=start_time, end_time=end_time, split_across_days=True
-    )
-    print("Availabilities")
-    for availability in availabilities:
-        fmt_date = lambda d: d.astimezone(pytz.timezone("UTC")).strftime(
-            "%m/%d/%Y, %H:%M:%S"
-        )
-        print(fmt_date(availability[0]), "-", fmt_date(availability[1]))
+    # availabilities = get_availability(
+    #     all_calendars, start_time=start_time, end_time=end_time, split_across_days=True
+    # )
+    # print("Availabilities")
+    # for availability in availabilities:
+    #     fmt_date = lambda d: d.astimezone(pytz.timezone("UTC")).strftime(
+    #         "%m/%d/%Y, %H:%M:%S"
+    #     )
+    #     print(fmt_date(availability[0]), "-", fmt_date(availability[1]))
 
-    # Schedule tasks
+    # # Schedule tasks
     dummy_start = (start_time - 1 * days).date()
     rules = {
         TaskDifficulty.HARD: ScheduleBlockRule(
@@ -118,13 +119,14 @@ def main_optimization(feazy_calendar_id: str):
             dtstart=dummy_start,
         ),
     }
-    feazy_calendar = GoogleCalendar(feazy_calendar_id)
-    schedule_tasks(
-        feazy_calendar=feazy_calendar,
-        availabilities=availabilities,
-        tasks=tasks,
-        schedule_rules=rules,
-    )
+    print(breakdown_tasks(tasks, rules))
+    # feazy_calendar = GoogleCalendar(feazy_calendar_id)
+    # schedule_tasks(
+    #     feazy_calendar=feazy_calendar,
+    #     availabilities=availabilities,
+    #     tasks=tasks,
+    #     schedule_rules=rules,
+    # )
 
 
 if __name__ == "__main__":

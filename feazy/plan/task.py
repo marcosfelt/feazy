@@ -39,7 +39,7 @@ class Task(Node):
         self,
         difficulty: TaskDifficulty,
         duration: int,
-        description: Optional[str],
+        description: str,
         task_id: Optional[str] = None,
         earliest_start: Union[date, datetime] = None,
         deadline: Union[date, datetime] = None,
@@ -129,10 +129,11 @@ class Task(Node):
 class TaskGraph(Graph):
     """Representation of a graphs of tasks"""
 
-    def __init__(self, tasks: List[Task]):
+    def __init__(self, tasks: Optional[List[Task]] = None):
         super().__init__(edge_direction=GraphDirection.DIRECTED)
-        for task in tasks:
-            self._nodes[task.val] = task
+        if tasks is not None:
+            for task in tasks:
+                self._nodes[task.val] = task
 
     def add_task(self, task: Task):
         if task.val in self._nodes:
@@ -143,6 +144,9 @@ class TaskGraph(Graph):
     def remove_task(self, task_id):
         if task_id in self._tasks:
             return self._tasks.pop(task_id)
+
+    def remove_dependency(self, source_task_id: str, successor_task_id: str):
+        self.remove_edge(source_task_id, successor_task_id)
 
     def add_dependency(
         self, source_task_id: str, successor_task_id: str

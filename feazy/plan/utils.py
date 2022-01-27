@@ -5,6 +5,7 @@ from queue import LifoQueue, SimpleQueue
 
 class Node:
     """Representaiton of a node in a graph"""
+
     def __init__(self, val: str) -> None:
         self.val = val
         self._adjacents = []
@@ -17,32 +18,37 @@ class Node:
             self._adjacents.remove(node)
         except ValueError:
             raise ValueError("Node does not exist in adjacents")
-    
+
     def is_adjacent(self, node: Node) -> bool:
         return node in self._adjacents
-    
+
     @property
     def adjacents(self) -> List[Node]:
         return self._adjacents
-    
+
     def __repr__(self) -> str:
         adjs = "".join([f"{adj.val}, " for adj in self._adjacents]).rstrip(", ")
         return f"Node(Val: {self.val} | Adjacents: {adjs})"
 
     def __eq__(self, node: Node) -> bool:
-        return (node.val == self.val) and all([a1==a2 for a1, a2 in zip(node.adjacents, self.adjacents)])
+        return (node.val == self.val) and all(
+            [a1 == a2 for a1, a2 in zip(node.adjacents, self.adjacents)]
+        )
 
 
 class GraphDirection:
     DIRECTED = "directed"
     UNDIRECTED = "undirected"
 
+
 class GraphSearch:
     BFS = "bfs"
     DFS = "dfs"
 
+
 class Graph:
     """Representation of a directed or undirected graph"""
+
     def __init__(self, edge_direction: str = GraphDirection.UNDIRECTED) -> None:
         self._nodes: Dict[str, Node]
         self._nodes = {}
@@ -56,7 +62,7 @@ class Graph:
             node = Node(val)
             self._nodes[node.val] = node
             return node
-    
+
     def remove_node(self, val: str) -> Node:
         """Remove a node from the graph"""
         if val in self._nodes:
@@ -64,7 +70,7 @@ class Graph:
             for node in self._nodes.values():
                 node.remove_adjacent(current)
             return current
-    
+
     def get_node(self, val: str) -> Node:
         return self._nodes.get(val)
 
@@ -77,10 +83,10 @@ class Graph:
 
         if self.edge_direction == GraphDirection.UNDIRECTED:
             destination_node.add_adjacent(source_node)
-        
+
         return source_node, destination_node
 
-    def remove_edge(self, source_val: str, destination_val: str)-> Tuple[Node, Node]:
+    def remove_edge(self, source_val: str, destination_val: str) -> Tuple[Node, Node]:
         source_node = self._nodes.get(source_val)
         destination_node = self._nodes.get(destination_val)
         if source_node and destination_node:
@@ -100,13 +106,12 @@ class Graph:
             if self.edge_direction == GraphDirection.UNDIRECTED:
                 check_2 = source_node in destination_node.adjacents
             return check_1 and check_2
-            
 
     def graph_search(self, root_val: str, type: str = GraphSearch.BFS):
         """Search over the graph"""
         visited = {}
         visit_list = SimpleQueue() if type == GraphSearch.BFS else LifoQueue()
-        
+
         # Add root to queue to start
         root = self._nodes.get(root_val)
         if root:
@@ -123,14 +128,17 @@ class Graph:
                     visit_list.put(adjacent)
 
     @property
-    def nodes(self)-> List[Node]:
+    def nodes(self) -> List[Node]:
         return [n for n in self._nodes.values()]
 
     def __repr__(self) -> str:
-        return "Graph(\n" + "".join([f"\t{node}\n" for node in self._nodes.values()]) + ")"
+        return (
+            "Graph(\n" + "".join([f"\t{node}\n" for node in self._nodes.values()]) + ")"
+        )
+
 
 def reverse_graph(g: Graph):
-    """ Reverse direction of graph"""
+    """Reverse direction of graph"""
     if g.edge_direction != GraphDirection.DIRECTED:
         raise ValueError("Must be a directed graph")
     new_graph = Graph(edge_direction=GraphDirection.DIRECTED)
@@ -140,7 +148,7 @@ def reverse_graph(g: Graph):
     return new_graph
 
 
-def read_file(file: str, delimeter: str="\t")-> List[List[str]]:
+def read_file(file: str, delimeter: str = "\t") -> List[List[str]]:
     with open(file, "r") as f:
         lines = f.readlines()
 

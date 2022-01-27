@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "foco"
+name = "feazy"
 version = "0.1.0"
 description = ""
 authors = ["Kobi Felton <kobi.c.f@gmail.com>"]
