@@ -2,7 +2,7 @@ from __future__ import annotations
 from uuid import uuid4
 from .utils import Node, Graph, GraphDirection
 from typing import List, Optional, Tuple, Union
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 import warnings
 from enum import Enum
 
@@ -18,10 +18,8 @@ class Task(Node):
 
     Arguments
     ---------
-    difficulty : `TaskDifficulty`
-        Difficulty level of the task
-    duration : int
-        Taks duration in minutes.
+    duration : timedelta
+        Taks duration
     description : str
         Description of the task
     task_id : str, optional
@@ -32,59 +30,62 @@ class Task(Node):
     deadline : date or datetime, optional
         The deadline for the task. If not specified, no deadline set and
         scheduling algorithm free to set finish of task.
+    wait_time : timedelta, optional
+        The amount of time to wait before scheduling an successor task. Useful
+        for tasks that are dependent on some external input.s
 
     """
 
     def __init__(
         self,
-        difficulty: TaskDifficulty,
-        duration: int,
+        duration: timedelta,
         description: str,
         task_id: Optional[str] = None,
         earliest_start: Union[date, datetime] = None,
         deadline: Union[date, datetime] = None,
+        wait_time: Optional[timedelta] = None,
     ) -> None:
         if task_id is None:
             task_id = uuid4()
         super().__init__(val=task_id)
-        self._difficulty = difficulty
         self.duration = duration
         self.description = description
-        self._early_start: int = 0
-        self._late_start: int = 0
+        # self._early_start: int = 0
+        # self._late_start: int = 0
         self._earliest_start = earliest_start
         self._deadline = deadline
+        self._wait_time = wait_time
         self._scheduled_start: datetime = None
-        self._scheduled_finish: datetime = None
+        self._scheduled_deadline: datetime = None
 
     @property
     def task_id(self):
         return self.val
 
-    @property
-    def early_start(self) -> int:
-        """The early start in task days"""
-        return self._early_start
+    # @property
+    # def early_start(self) -> int:
+    #     """The early start in task days"""
+    #     return self._early_start
 
-    @early_start.setter
-    def early_start(self, time: int) -> None:
-        self._early_start = time
+    # @early_start.setter
+    # def early_start(self, time: int) -> None:
+    #     self._early_start = time
 
-    @property
-    def early_finish(self) -> int:
-        return self._early_start + self.duration
+    # @property
+    # def early_finish(self) -> int:
+    #     return self._early_start + self.duration
 
-    @property
-    def late_start(self) -> int:
-        return self._late_start
+    # @property
+    # def late_start(self) -> int:
+    #     return self._late_start
 
-    @late_start.setter
-    def late_start(self, time: int) -> None:
-        self._late_start = time
+    # @late_start.setter
+    # def late_start(self, time: int) -> None:
+    #     self._late_start = time
 
-    @property
-    def late_finish(self) -> int:
-        return self._late_start + self.duration
+    # @property
+    # def late_finish(self) -> int:
+    #     return self._late_start + self.duration
 
     @property
     def earliest_start(self) -> datetime:
@@ -109,17 +110,33 @@ class Task(Node):
         self._deadline = day
 
     @property
-    def difficulty(self):
-        return self._difficulty
+    def scheduled_start(self) -> Union[date, datetime, None]:
+        return self._scheduled_start
 
-    # def convert_deadline_to_task(self, converter: TaskTimeConverter):
-    #     """Convert deadline to actual task time"""
-    #     # Make sure to cache
-    #     pass
+    @scheduled_start.setter
+    def scheduled_start(self, val):
+        if type(val) in [date, datetime]:
+            self._scheduled_start = val
+        else:
+            raise ValueError("Start time must be a date or datetime")
 
     @property
-    def slack(self) -> int:
-        return self.late_start - self.early_start
+    def scheduled_dedadline(self) -> Union[date, datetime, None]:
+        return self._scheduled_deadline
+
+    @scheduled_dedadline.setter
+    def scheduled_deadline(self, val):
+        if type(val) in [date, datetime]:
+            self._scheduled_deadline = val
+        else:
+            raise ValueError("Scheduled deadline must be a date or datetime")
+
+    @property
+    def wait_time(self) -> timedelta:
+        if self._wait_time is not None:
+            return self._wait_time
+        else:
+            return timedelta()
 
     @property
     def successors(self) -> List[Task]:
@@ -161,41 +178,40 @@ class TaskGraph(Graph):
 
         return source_node, destination_node
 
-    def __getitem__(self, task_id):
+    def __getitem__(self, task_id) -> Task:
         return self._nodes.get(task_id)
 
     def __repr__(self) -> str:
         # headers = ["Task Code", "Duration", "Early Start", "Early Finish", "Late Start", "Late Finish", "Slack"]
-        headers = ["Task Code", "Task Description" + " " * 20, "Difficulty", "Start"]
+        headers = ["Task ID", "Task Description" + " " * 20]
         repr = "".join([f"{h}\t" for h in headers]) + "\n"
-        d = 2
-        for task in self._nodes.values():
+
+        scheduled_tasks = [
+            t for t in self.all_tasks if t.scheduled_start and t.scheduled_deadline
+        ]
+        scheduled_tasks.sort(key=lambda t: t.scheduled_start, reverse=False)
+        start_time: datetime = scheduled_tasks[0].scheduled_start
+        end_time: datetime = scheduled_tasks[-1].scheduled_deadline
+        d = int((end_time - start_time).total_seconds() / (3600 * 24) / 100)
+        for task in scheduled_tasks:
             values = [
                 task.task_id,
                 task.description,
-                task.difficulty.name,
-                # task.duration,
-                task.early_start,
-                # task.early_finish,
-                # task._late_start,
-                # task.late_finish,
-                # task.slack
             ]
             repr += "".join(
                 [str(v).ljust(len(h), " ") + "\t" for h, v in zip(headers, values)]
             )
-            offset = int(task.early_start / d if task.early_start != 0 else 0)
+            offset = int(
+                (task.scheduled_start - start_time).total_seconds() / (3600 * 24) / d
+            )  # in days
             repr += " " * offset
-            # repr += "|"
-            dur = int(task.duration / d if task.duration > 1 else 1)
+            repr += "|"
+            dur = int(
+                (task.scheduled_deadline - task.scheduled_start).total_seconds()
+                / (3600 * 24)
+                / d
+            )  # In days
             repr += "|" * dur
-            if task.late_start > task.early_finish:
-                offset = int((task.late_start - task.early_finish) / d)
-                repr += " " * offset
-                repr += "*" * dur
-            else:
-                dur = int((task.late_finish - task.early_finish) / d)
-                repr += "*" * dur
             repr += "\n"
         return repr
 
