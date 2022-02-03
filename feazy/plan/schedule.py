@@ -43,10 +43,8 @@ Once the exact start times are figured out, convert back to real time
 from .task import Task, TaskGraph, TaskDifficulty
 from gcsa.google_calendar import GoogleCalendar, Event
 from gcsa.event import Transparency
-from dateutil.rrule import rrule, DAILY
 from beautiful_date import *
-from pyomo.environ import *
-from pyomo.gdp import *
+from ortools.sat.python import cp_model
 from datetime import datetime, time, timedelta, date
 from typing import List, Union, Tuple, Optional, Dict
 from queue import LifoQueue
@@ -56,6 +54,7 @@ import numpy as np
 import pandas as pd
 from copy import deepcopy
 import logging
+import collections
 
 fmt_date = lambda d: d.astimezone(pytz.timezone("UTC")).strftime("%m/%d/%Y, %H:%M:%S")
 
@@ -202,152 +201,6 @@ def convert_dates_to_datetimes(
             event.end = timezone.localize(datetime.combine(event.end, time(23, 59, 59)))
 
 
-class ScheduleBlockRule(rrule):
-    """Rules for blocks on schedules. Only daily for now
-
-    Arguments
-    ---------
-    block_duration : int
-        The amount of time in minutes in a single block
-    max_blocks: int, optional
-        The maximum number of blocks in a period. So if `max_blocks=2`
-        and `freq=WEEKLY`, a maximum two blocks can be scheduled per week.
-        Defaults to 1.
-    earliest_time : datetime.time, optional
-        The earliest time a block can be scheduled in a given day. Defaults to 9 AM UTC.
-    latest_time : datetime.time, optional
-        The latest time a block can be scheduled in a given day. Defaults to 7 PM UTC.
-    break_duration_before : int, optional
-        Duration of break before block in mintues. Defaults to 0 (i.e., no break)
-    break_duration : int, optional
-        Duration of break after block in mintues. Defaults to 0 (i.e., no break)
-    **kwargs
-        See https://dateutil.readthedocs.io/en/stable/rrule.html#classes
-    """
-
-    def __init__(
-        self,
-        block_duration: int,
-        max_blocks: Optional[int] = 1,
-        earliest_time: Optional[time] = None,
-        latest_time: Optional[time] = None,
-        break_duration_before: Optional[int] = 0,
-        break_duration_after: Optional[int] = 0,
-        **kwargs,
-    ) -> None:
-        self.block_duration = block_duration
-        self.max_blocks = max_blocks
-        self.break_duration_before = break_duration_before
-        self.break_duration_after = break_duration_after
-        timezone = pytz.timezone("UTC")
-        self._earliest_time = (
-            timezone.localize(time(hour=9, minute=0))
-            if earliest_time is None
-            else earliest_time
-        )
-        self._latest_time = (
-            timezone.localize(time(hour=17, minute=0))
-            if latest_time is None
-            else latest_time
-        )
-        self._block_count = {}
-        # Cache for speed
-        if kwargs.get("cache", None):
-            kwargs["cache"] = True
-        super().__init__(freq=DAILY, **kwargs)
-
-    @property
-    def earliest_time(self) -> time:
-        return self._earliest_time
-
-    @earliest_time.setter
-    def earliest_time(self, t: time):
-        if self.latest_time is not None:
-            assert t < self.latest_time
-        self._earliest_time = t
-
-    @property
-    def latest_time(self) -> time:
-        return self._latest_time
-
-    @latest_time.setter
-    def latest_time(self, t: time):
-        if self.earliest_time is not None:
-            assert t > self.earliest_time
-        self._latest_time = t
-
-    def blocks_between(
-        self, start_time: datetime, end_time: datetime
-    ) -> List[Optional[Event]]:
-
-        # Check if times within early/late times
-        earliest_time = datetime.combine(
-            start_time.date(), self.earliest_time, tzinfo=start_time.tzinfo
-        )
-        if start_time < earliest_time:
-            start_time = earliest_time
-
-        if start_time > end_time:
-            return []
-        latest_time = datetime.combine(
-            start_time.date(), self.latest_time, tzinfo=start_time.tzinfo
-        )
-        if end_time > latest_time:
-            end_time = latest_time
-
-        # Check for recurrence rule
-        item = self.before(start_time.replace(tzinfo=None), inc=True)
-        check_rule = False
-        if item:
-            if item.date() == start_time.date():
-                check_rule = True
-
-        # Check for max block counts
-        if not self._block_count.get(start_time.date()):
-            self._block_count[start_time.date()] = 0
-        check_count = self._block_count[start_time.date()] < self.max_blocks
-
-        if check_rule and check_count:
-            # Total time in minutes
-            dt = (end_time - start_time).total_seconds() / 60
-            # Block time
-            block_and_break = (
-                self.block_duration
-                + self.break_duration_before
-                + self.break_duration_after
-            )
-            # Always round down for number of blocks
-            num_blocks = math.floor(dt / block_and_break)
-
-            self.last_end = start_time
-            for _ in range(num_blocks):
-                events = []
-                # Break before
-                if self.break_duration_before > 0:
-                    end = self.last_end + timedelta(minutes=self.break_duration_before)
-                    events.append(
-                        Event(start=self.last_end, end=end, summary="Break Before")
-                    )
-                    self.last_end = end
-
-                # Block
-                end = self.last_end + timedelta(minutes=self.block_duration)
-                events.append(Event(start=self.last_end, end=end, summary=""))
-                self.last_end = end
-
-                # Break after
-                if self.break_duration_after > 0:
-                    end = self.last_end + timedelta(minutes=self.break_duration_after)
-                    events.append(
-                        Event(start=self.last_end, end=end, summary="Break After")
-                    )
-                    self.last_end = end
-                yield events
-                self._block_count[start_time.date()] += 1
-        else:
-            return []
-
-
 def find_start_tasks(tasks: TaskGraph) -> List[Task]:
     """Find start tasks using the adjancency matrix
 
@@ -470,33 +323,33 @@ def _optimize_timing(
     start_time: Optional[datetime] = None,
     deadline: Optional[datetime] = None,
 ) -> TaskGraph:
-    logger = logging.getLogger(__name__)
+    """Optimize timing using CpSAT solver"""
+
     # Filter availabilities to work times
-    logger.debug("Filtering availabilities")
-    filtered_availabilities = filter_availabilities(availabilities, work_times)
-    filtered_availabilities.sort(key=lambda d: d[0], reverse=False)
+    # logger.debug("Filtering availabilities")
+    # filtered_availabilities = filter_availabilities(availabilities, work_times)
+    # filtered_availabilities.sort(key=lambda d: d[0], reverse=False)
 
-    # Use beginning and end of availability as start and end time by default
-    if start_time is None:
-        start_time = availabilities[0][0]
-    if deadline is None:
-        deadline = availabilities[-1][0]
+    # # Use beginning and end of availability as start and end time by default
+    # if start_time is None:
+    #     start_time = availabilities[0][0]
+    # if deadline is None:
+    #     deadline = availabilities[-1][0]
+    filtered_availabilities = []
 
-    # Convert availabilities
-    # total_hours, conversion_table = convert_availabilities_to_hours(
-    #     filtered_availabilities
-    # )
-
-    # Formulate and solve optimizaton problem
-    logger.debug("Constructing pyomo model")
-    model = create_pyomo_optimization_model(
+    # Formulate and solve optimization problem
+    model, early_vars, late_vars = create_optimization_model(
         tasks, filtered_availabilities, start_time, deadline
     )
-    schedule_solve_neos(model)
+    solver, status = solve_cpsat(model)
 
     # Update tasks with scheduled start times and deadlines
-    logger.debug("Post-processing optimization solution")
-    new_tasks = post_process_model(model, tasks, start_time)
+    if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+        new_tasks = post_process_solution(
+            solver, tasks, start_time, early_vars, late_vars
+        )
+    else:
+        raise ValueError("No solution found")
     return new_tasks
 
 
@@ -547,213 +400,121 @@ def filter_availabilities(
     return new_availabilities
 
 
-def convert_availabilities_to_hours(
-    availabilities: List[Tuple[datetime, datetime]]
-) -> Tuple[int, pd.DataFrame]:
-    """Convert availabilities to a total hours for project"""
-    data = []
-    total_hours = 0
-    availabilities.sort(key=lambda d: d[0], reverse=False)
-    for availability in availabilities:
-        duration = (availability[1] - availability[0]).total_seconds() / 3600
-        data.append(
-            {
-                "start_datetime": availability[0],
-                "end_datetime": availability[1],
-                "start_hour": total_hours,
-                "end_hour": total_hours + duration,
-            }
-        )
-        total_hours += duration
-    df = pd.DataFrame(data)
-    for col in ["start_datetime", "end_datetime"]:
-        df[col] = pd.to_datetime(df[col])
-    return total_hours, df
-
-
-def convert_time_to_hours(start_time: datetime, time: datetime) -> int:
+def convert_datetime_to_model_hours(start_time: datetime, time: datetime) -> int:
     return int((time - start_time).total_seconds() / 3600)
 
 
-def convert_hours_to_time(start_time: datetime, hours: int) -> datetime:
+def convert_model_hours_to_datetime(start_time: datetime, hours: int) -> datetime:
     return start_time + timedelta(hours=hours)
 
 
-def create_pyomo_optimization_model(
+def create_optimization_model(
     tasks: TaskGraph,
     availabilities: List[Tuple[datetime, datetime]],
     start_time: datetime,
     deadline: datetime,
-) -> Model:
-    """Create Pyomo optimization model. Time is in hours"""
-    #### Setup ####
-    # Start time is earliest availability
+) -> Tuple[cp_model.CpModel, Dict, Dict]:
+    """Create OR-tools optimization model. Time is in hours"""
+    # Create model
+    model = cp_model.CpModel()
 
-    # Pyomo model
-    model = ConcreteModel()
+    # Create variables for early and late starts + intervals
+    early_vars = {}
+    late_vars = {}
+    project_deadline_hours = convert_datetime_to_model_hours(start_time, deadline)
+    task_type = collections.namedtuple("task_type", "start end interval")
+    for task in tasks.all_tasks:
+        for name, var_group in {
+            "early": early_vars,
+            "late": late_vars,
+        }.items():
+            lb = (
+                0
+                if task.earliest_start is None
+                else convert_datetime_to_model_hours(start_time, task.earliest_start)
+            )
+            ub = (
+                project_deadline_hours
+                if task.deadline is None
+                else convert_datetime_to_model_hours(start_time, task.deadline)
+            )
+            start_var = model.NewIntVar(lb, ub, f"{name}_start_{task.task_id}")
+            end_var = model.NewIntVar(lb, ub, f"{name}_finish_{task.task_id}")
+            dur = int(task.duration.total_seconds() / 3600)
+            interval_var = model.NewIntervalVar(
+                start_var, dur, end_var, f"{name}_interval_{task.task_id}"
+            )
+            var_group[task.task_id] = task_type(
+                start=start_var, end=end_var, interval=interval_var
+            )
 
-    # Tasks is a set of task ids
-    task_keys = list(set([task.task_id for task in tasks.all_tasks]))
-    model.TASKS = Set(initialize=task_keys, dimen=1)
+    # No overlap constraint
+    for var_group in [early_vars, late_vars]:
+        model.AddNoOverlap([group.interval for group in var_group.values()])
 
-    # The order of tasks is based on the adjacent tasks
-    dependencies = list(
-        set(
-            [
-                (task.task_id, adj.task_id)
-                for task in tasks.all_tasks
-                for adj in task.adjacents
-            ]
-        )
-    )
-    model.TASK_ORDER = Set(initialize=dependencies, dimen=2)
-
-    # The set of disjunctions (i.e., no time overlaps) is cross-product of all tasks
-    model.DISJUNCTIONS = Set(
-        initialize=model.TASKS * model.TASKS,
-        dimen=2,
-        filter=lambda model, t, u: t < u and t in model.TASKS and u in model.TASKS,
-    )
-
-    # Load duration (in hours) into a model parameter. Make all durations a minimum of 1 hour
-    model.dur = Param(
-        model.TASKS,
-        initialize=lambda model, t: int(tasks[t].duration.total_seconds() / 3600)
-        if tasks[t].duration.total_seconds() / 3600 > 1
-        else 1,
-    )
-
-    # Load wait times into a model parameter
-    model.wait = Param(
-        model.TASKS,
-        initialize=lambda model, t: int(tasks[t].wait_time.total_seconds() / 3600)
-        if tasks[t].wait_time.total_seconds() / 3600 > 1
-        else 0,
-    )
-
-    #### Decision Variables ####
-    project_deadline_hours = convert_time_to_hours(start_time, deadline)
-
-    def bounds_rule(model, task_id):
-        task = tasks[task_id]
-        # Lower bounded by 0 or earliest start time
-        lb = (
-            1
-            if task.earliest_start is None
-            else convert_time_to_hours(start_time, task.earliest_start)
-        )
-        # Upper bounded by project deadline or task deadline
-        ub = (
-            project_deadline_hours
-            if task.deadline is None
-            else convert_time_to_hours(start_time, task.deadline)
-        )
-        return lb, ub
-
-    model.early_start = Var(model.TASKS, bounds=(1, project_deadline_hours))
-    model.late_start = Var(model.TASKS, bounds=(1, project_deadline_hours))
-
-    #### Objectives ####
-    # Maximize slack and minimize latest finish
-    model.max_slack = Var(model.TASKS, bounds=(1, project_deadline_hours))
-    total_slack = sum([s for s in model.max_slack.values()])
-    model.latest_finish = Var(
-        bounds=(0, project_deadline_hours)
-        #  domain=PositiveIntegers
-    )
-    model.objective = Objective(expr=total_slack - model.latest_finish, sense=maximize)
-    # model.objective = Objective(expr=model.latest_finish, sense=minimize)
-
-    #### Constraints ####
-    # Constraint that late finish must be before latest finish (which is in turn before deadline)
-    model.finish = Constraint(
-        model.TASKS,
-        rule=lambda model, t: model.late_start[t] + model.dur[t] + model.wait[t]
-        <= model.latest_finish,
-    )
-
-    # Constraint for task dependencies
-    model.preceding_early_start = Constraint(
-        model.TASK_ORDER,
-        rule=lambda model, t, u: model.early_start[t] + model.dur[t] + model.wait[t]
-        <= model.early_start[u],
-    )
-    model.preceding_late_start = Constraint(
-        model.TASK_ORDER,
-        rule=lambda model, t, u: model.late_start[t] + model.dur[t] + model.wait[t]
-        <= model.late_start[u],
-    )
-
-    # Availabilities
-    model.availabilities = ConstraintList()
-    for st in [model.early_start, model.late_start]:
-        for availability in availabilities:
-            # Only consider > 1 hour availabilities for now
-            if (availability[1] - availability[0]).total_seconds() < 3600:
-                continue
-            for t in model.TASKS:
-                model.availabilities.add(
-                    st[t] >= convert_time_to_hours(start_time, availability[0]),
-                )
-                model.availabilities.add(
-                    st[t] <= convert_time_to_hours(start_time, availability[1]),
+    # Precedence constraint
+    for task in tasks.all_tasks:
+        for var_group in [early_vars, late_vars]:
+            for succ in task.successors:
+                wait_time = task.wait_time.total_seconds() / 3600
+                model.Add(
+                    var_group[task.task_id].end + wait_time
+                    <= var_group[succ.task_id].start
                 )
 
-    # Make sure late start is always after early start
-    # Max slack is lower bounded at 1
-    model.slacks = Constraint(
-        model.TASKS,
-        rule=lambda model, t: model.late_start[t] - model.early_start[t]
-        <= model.max_slack[t],
+    # Slack constraint (early start must before late start)
+    for task in tasks.all_tasks:
+        model.Add(early_vars[task.task_id].start <= late_vars[task.task_id].start)
+
+    # Availability constraints
+
+    # Objectives: minimize late finish while maximizing slack
+    sum_task_slacks = sum(
+        [
+            late_vars[task.task_id].start - early_vars[task.task_id].start
+            for task in tasks.all_tasks
+        ]
     )
-
-    # Constraint for non-overalapping tasks (might change later)
-    model.disjunctions_early_start = Disjunction(
-        model.DISJUNCTIONS,
-        rule=lambda model, t, u: [
-            model.early_start[t] + model.dur[t] <= model.early_start[u],
-            model.early_start[u] + model.dur[u] <= model.early_start[t],
-        ],
+    late_finish_obj_var = model.NewIntVar(0, project_deadline_hours, "late_finish")
+    model.AddMaxEquality(
+        late_finish_obj_var,
+        [late_vars[task.task_id].end for task in tasks.all_tasks],
     )
-    model.disjunctions_late_start = Disjunction(
-        model.DISJUNCTIONS,
-        rule=lambda model, t, u: [
-            model.late_start[t] + model.dur[t] <= model.late_start[u],
-            model.late_start[u] + model.dur[u] <= model.late_start[t],
-        ],
-    )
+    model.Minimize(late_finish_obj_var - sum_task_slacks)
 
-    # Transform into higher dimensional space
-    TransformationFactory("gdp.hull").apply_to(model)
-    return model
+    return model, early_vars, late_vars
 
 
-def post_process_model(
-    model: ConcreteModel,
+def post_process_solution(
+    solver: cp_model.CpSolver,
     tasks: TaskGraph,
     start_time: datetime,
+    early_vars: Dict,
+    late_vars: Dict,
     copy=True,
 ) -> List[Event]:
-    """Set early start and late start of tasks using conversion table"""
+    """Set"""
     if copy:
         tasks = deepcopy(tasks)
     for task in tasks.all_tasks:
-        task.early_start = convert_hours_to_time(
-            start_time, int(model.early_start[task.task_id])
+        task.scheduled_start = convert_model_hours_to_datetime(
+            start_time, solver.Value(early_vars[task.task_id].start)
         )
         task.scheduled_deadline = (
-            convert_hours_to_time(start_time, int(model.late_start[task.task_id]))
-        ) + task[task.task_id].duration
+            convert_model_hours_to_datetime(
+                start_time, solver.Value(late_vars[task.task_id].start)
+            )
+        ) + task.duration
     return tasks
 
 
-def schedule_solve_neos(model: Model) -> None:
+def solve_cpsat(model: cp_model.CpModel) -> None:
+    """Solve optimization problem using CpSAT"""
     logger = logging.getLogger(__name__)
-    # Solve
-    logger.info("Solving optimization problem on NEOS")
-    solver_manger = SolverManagerFactory("neos")
-    solver_manger.solve(model, opt="cplex")
-    # SolverFactory('apopt').solve(model)
+    logger.debug("Solving optimization problem using CPSat")
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+    return solver, status
 
 
 def schedule_events(
@@ -782,7 +543,7 @@ def check_existing_events(
 
 def optimize_schedule(
     tasks: TaskGraph,
-    work_times: Dict[TaskDifficulty, ScheduleBlockRule],
+    work_times: Dict[int, Tuple[time, time]],
     start_time: datetime,
     deadline: datetime,
     base_calendar: GoogleCalendar,
@@ -801,18 +562,19 @@ def optimize_schedule(
 
     # Get availability
     logger.info("Getting availability")
-    exclude_calendar_ids = (
-        exclude_calendar_ids if exclude_calendar_ids is not None else []
-    )
-    exclude_calendar_ids = list(set(exclude_calendar_ids))
-    calendars = get_calendars(base_calendar, exclude=exclude_calendar_ids)
-    availabilities = get_availability(
-        calendars,
-        start_time,
-        deadline,
-        transparent_as_free=transparent_as_free,
-        split_across_days=True,
-    )
+    # exclude_calendar_ids = (
+    #     exclude_calendar_ids if exclude_calendar_ids is not None else []
+    # )
+    # exclude_calendar_ids = list(set(exclude_calendar_ids))
+    # calendars = get_calendars(base_calendar, exclude=exclude_calendar_ids)
+    # availabilities = get_availability(
+    #     calendars,
+    #     start_time,
+    #     deadline,
+    #     transparent_as_free=transparent_as_free,
+    #     split_across_days=True,
+    # )
+    availabilities = []
 
     # Split tasks into blocks
     if block_duration is None:
@@ -825,7 +587,6 @@ def optimize_schedule(
     )
 
     # Solve the internal optimization problem using pyomo
-    logger.info("Entering optimization block")
     scheduled_tasks = _optimize_timing(
         tasks=mini_tasks,
         availabilities=availabilities,

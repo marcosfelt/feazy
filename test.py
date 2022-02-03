@@ -66,9 +66,8 @@ def main_optimization(main_calendar="kobi.c.f@gmail.com"):
 
 if __name__ == "__main__":
     start = datetime.now()
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG)
     logger = logging.getLogger(__name__)
-    os.environ["NEOS_EMAIL"] = "kobi.c.f@gmail.com"
     main_optimization()
     end = datetime.now()
     delta = (end - start).total_seconds() / 60

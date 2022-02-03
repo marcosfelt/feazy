@@ -41,7 +41,7 @@ class Task(Node):
         duration: timedelta,
         description: str,
         task_id: Optional[str] = None,
-        earliest_start: Union[date, datetime] = None,
+        earliest_start: Optional[Union[date, datetime]] = None,
         deadline: Union[date, datetime] = None,
         wait_time: Optional[timedelta] = None,
     ) -> None:
@@ -88,7 +88,7 @@ class Task(Node):
     #     return self._late_start + self.duration
 
     @property
-    def earliest_start(self) -> datetime:
+    def earliest_start(self) -> Union[datetime, None]:
         if type(self._earliest_start) == date:
             return datetime.combine(
                 self._earliest_start, time(hour=0, minute=0, second=0)
@@ -182,22 +182,19 @@ class TaskGraph(Graph):
         return self._nodes.get(task_id)
 
     def __repr__(self) -> str:
-        # headers = ["Task Code", "Duration", "Early Start", "Early Finish", "Late Start", "Late Finish", "Slack"]
-        headers = ["Task ID", "Task Description" + " " * 20]
+        headers = ["Task ID", "Task Description" + " " * 20, "Start"]
         repr = "".join([f"{h}\t" for h in headers]) + "\n"
 
         scheduled_tasks = [
             t for t in self.all_tasks if t.scheduled_start and t.scheduled_deadline
         ]
+        scheduled_tasks.sort(key=lambda t: t.scheduled_deadline, reverse=False)
+        end_time: datetime = scheduled_tasks[-1].scheduled_deadline
         scheduled_tasks.sort(key=lambda t: t.scheduled_start, reverse=False)
         start_time: datetime = scheduled_tasks[0].scheduled_start
-        end_time: datetime = scheduled_tasks[-1].scheduled_deadline
-        d = int((end_time - start_time).total_seconds() / (3600 * 24) / 100)
+        d = int((end_time - start_time).total_seconds() / (3600 * 24) / 50)
         for task in scheduled_tasks:
-            values = [
-                task.task_id,
-                task.description,
-            ]
+            values = [task.task_id, task.description, task.scheduled_start]
             repr += "".join(
                 [str(v).ljust(len(h), " ") + "\t" for h, v in zip(headers, values)]
             )
@@ -206,11 +203,7 @@ class TaskGraph(Graph):
             )  # in days
             repr += " " * offset
             repr += "|"
-            dur = int(
-                (task.scheduled_deadline - task.scheduled_start).total_seconds()
-                / (3600 * 24)
-                / d
-            )  # In days
+            dur = int(task.duration.total_seconds() / (3600 * 24) / d)  # In days
             repr += "|" * dur
             repr += "\n"
         return repr
