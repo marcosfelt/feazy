@@ -606,11 +606,6 @@ def optimize_schedule(
     logger.info(
         f"Total available time before filtering: {total_available_time:.01f} hours"
     )
-    for a in availabilities:
-        print(fmt_date(a[0]), " -  ", fmt_date(a[1]))
-    import pdb
-
-    pdb.set_trace()
 
     # Filter availabilities to work times
     filtered_availabilities = filter_availabilities(availabilities, work_times)
@@ -620,6 +615,12 @@ def optimize_schedule(
     )
     logger.debug(f"Total available time: {total_available_time:.01f} hours")
     filtered_availabilities = availabilities
+
+    for a in availabilities:
+        print(fmt_date(a[0]), " -  ", fmt_date(a[1]))
+    import pdb
+
+    pdb.set_trace()
 
     # Split tasks into blocks
     if block_duration is None:
