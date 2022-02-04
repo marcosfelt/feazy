@@ -124,6 +124,7 @@ def get_availability(
     # Sort events by increasing time
     events.sort()
     convert_dates_to_datetimes(events)
+    events = _remove_duplicates(events)
 
     # Specify availability as a list of times where there aren't events
     availabilities = []
@@ -159,6 +160,19 @@ def get_availability(
         availabilities.extend(availability)
 
     return availabilities
+
+
+def _remove_duplicates(events: List[Event]):
+    new_events = events[:1]
+    for event in events:
+        exists = False
+        for other in new_events:
+            if event.start == other.start and event.end == other.end:
+                exists = True
+        if not exists:
+            new_events.append(event)
+
+    return new_events
 
 
 def _split_across_days(
@@ -319,27 +333,21 @@ def breakdown_tasks(tasks: TaskGraph, block_duration: timedelta) -> TaskGraph:
 def _optimize_timing(
     tasks: TaskGraph,
     availabilities: List[Tuple[datetime, datetime]],
-    work_times: Dict[int, Tuple[time, time]],
     start_time: Optional[datetime] = None,
     deadline: Optional[datetime] = None,
 ) -> TaskGraph:
     """Optimize timing using CpSAT solver"""
+    logger = logging.getLogger(__name__)
 
-    # Filter availabilities to work times
-    # logger.debug("Filtering availabilities")
-    # filtered_availabilities = filter_availabilities(availabilities, work_times)
-    # filtered_availabilities.sort(key=lambda d: d[0], reverse=False)
-
-    # # Use beginning and end of availability as start and end time by default
-    # if start_time is None:
-    #     start_time = availabilities[0][0]
-    # if deadline is None:
-    #     deadline = availabilities[-1][0]
-    filtered_availabilities = []
+    # Use beginning and end of availability as start and end time by default
+    if start_time is None:
+        start_time = availabilities[0][0]
+    if deadline is None:
+        deadline = availabilities[-1][0]
 
     # Formulate and solve optimization problem
     model, early_vars, late_vars = create_optimization_model(
-        tasks, filtered_availabilities, start_time, deadline
+        tasks, availabilities, start_time, deadline
     )
     solver, status = solve_cpsat(model)
 
@@ -448,9 +456,30 @@ def create_optimization_model(
                 start=start_var, end=end_var, interval=interval_var
             )
 
-    # No overlap constraint
-    for var_group in [early_vars, late_vars]:
-        model.AddNoOverlap([group.interval for group in var_group.values()])
+    # Availabilities
+    availabilities.sort(key=lambda a: a[0], reverse=False)
+    busy_intervals = []
+    for task in tasks.all_tasks:
+        for i in range(1, len(availabilities)):
+            start = convert_datetime_to_model_hours(
+                start_time, availabilities[i - 1][1]
+            )
+            end = convert_datetime_to_model_hours(start_time, availabilities[i][0])
+            size = end - start
+            if i >= 2:
+                assert availabilities[i - 1][0] > availabilities[i - 2][1]
+            if size > 0:
+                busy_intervals.append(
+                    model.NewIntervalVar(start, size, end, f"busy_interval_{i}")
+                )
+
+    # No overlap constraint with availability constraints
+    # for var_group in [early_vars, late_vars]:
+    #     model.AddNoOverlap([group.interval for group in var_group.values()])
+    model.AddNoOverlap(
+        [group.interval for group in early_vars.values()] + busy_intervals
+    )
+    model.AddNoOverlap([group.interval for group in late_vars.values()])
 
     # Precedence constraint
     for task in tasks.all_tasks:
@@ -465,8 +494,6 @@ def create_optimization_model(
     # Slack constraint (early start must before late start)
     for task in tasks.all_tasks:
         model.Add(early_vars[task.task_id].start <= late_vars[task.task_id].start)
-
-    # Availability constraints
 
     # Objectives: minimize late finish while maximizing slack
     sum_task_slacks = sum(
@@ -561,20 +588,38 @@ def optimize_schedule(
     logger = logging.getLogger(__name__)
 
     # Get availability
-    logger.info("Getting availability")
-    # exclude_calendar_ids = (
-    #     exclude_calendar_ids if exclude_calendar_ids is not None else []
-    # )
-    # exclude_calendar_ids = list(set(exclude_calendar_ids))
-    # calendars = get_calendars(base_calendar, exclude=exclude_calendar_ids)
-    # availabilities = get_availability(
-    #     calendars,
-    #     start_time,
-    #     deadline,
-    #     transparent_as_free=transparent_as_free,
-    #     split_across_days=True,
-    # )
-    availabilities = []
+    exclude_calendar_ids = (
+        exclude_calendar_ids if exclude_calendar_ids is not None else []
+    )
+    exclude_calendar_ids = list(set(exclude_calendar_ids))
+    calendars = get_calendars(base_calendar, exclude=exclude_calendar_ids)
+    availabilities = get_availability(
+        calendars,
+        start_time,
+        deadline,
+        transparent_as_free=transparent_as_free,
+        split_across_days=False,
+    )
+    total_available_time = sum(
+        [(a[1] - a[0]).total_seconds() / 3600 for a in availabilities]
+    )
+    logger.info(
+        f"Total available time before filtering: {total_available_time:.01f} hours"
+    )
+    for a in availabilities:
+        print(fmt_date(a[0]), " -  ", fmt_date(a[1]))
+    import pdb
+
+    pdb.set_trace()
+
+    # Filter availabilities to work times
+    filtered_availabilities = filter_availabilities(availabilities, work_times)
+    filtered_availabilities.sort(key=lambda d: d[0], reverse=False)
+    total_available_time = sum(
+        [(a[1] - a[0]).total_seconds() / 3600 for a in filtered_availabilities]
+    )
+    logger.debug(f"Total available time: {total_available_time:.01f} hours")
+    filtered_availabilities = availabilities
 
     # Split tasks into blocks
     if block_duration is None:
@@ -589,8 +634,7 @@ def optimize_schedule(
     # Solve the internal optimization problem using pyomo
     scheduled_tasks = _optimize_timing(
         tasks=mini_tasks,
-        availabilities=availabilities,
-        work_times=work_times,
+        availabilities=filtered_availabilities,
         start_time=start_time,
         deadline=deadline,
     )

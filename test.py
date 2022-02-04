@@ -33,8 +33,8 @@ def main_optimization(main_calendar="kobi.c.f@gmail.com"):
 
     # Start time and deadline
     timezone = pytz.timezone("UTC")
-    start_time = timezone.localize((Feb / 2 / 2022)[00:00])
-    deadline = start_time + 100 * days
+    start_time = timezone.localize((May / 1 / 2022)[00:00])
+    deadline = start_time + 14 * days
 
     # Work Times (9-5 M-F)
     work_times = {
@@ -57,7 +57,11 @@ def main_optimization(main_calendar="kobi.c.f@gmail.com"):
         base_calendar=calendar,
         exclude_calendar_ids=[
             # Weather calendar
-            "jc1o00r4ve65t348l20l2q0090ken3q7@import.calendar.google.com"
+            "jc1o00r4ve65t348l20l2q0090ken3q7@import.calendar.google.com",
+            # chandler's calendar
+            "jcgsville@gmail.com",
+            # Birthdays
+            "addressbook#contacts@group.v.calendar.google.com",
         ],
         block_duration=timedelta(hours=2),
     )
@@ -66,9 +70,19 @@ def main_optimization(main_calendar="kobi.c.f@gmail.com"):
 
 if __name__ == "__main__":
     start = datetime.now()
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     main_optimization()
     end = datetime.now()
     delta = (end - start).total_seconds() / 60
     logging.info(f"Took {delta:.01f} minutes to run")
+
+    [
+        "gm4r1jfef9c5mhncikq3f21tquoq7mkl@import.calendar.google.com",  # deleted
+        "kobi.c.f@gmail.com",  # yes
+        "qj19opnssbjsdn1ss8nlmmrkcgo4cim2@import.calendar.google.com",  # yes
+        "addressbook#contacts@group.v.calendar.google.com",  # no
+        "1sgehna3vnjore0l378nfvnkk4@group.calendar.google.com",  # yes
+        "gp4vjf4ln68kt692bv3rllgq8c@group.calendar.google.com",  # yes
+        "kcmf2@cam.ac.uk",  # yes
+    ]
