@@ -32,7 +32,7 @@ def main_optimization(main_calendar="kobi.c.f@gmail.com"):
         tasks.add_dependency(dependency[0], dependency[1])
 
     # Start time and deadline
-    timezone = pytz.timezone("UTC")
+    timezone = pytz.timezone("Europe/London")
     start_time = timezone.localize((May / 1 / 2022)[00:00])
     deadline = start_time + 14 * days
 

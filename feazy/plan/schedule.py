@@ -39,7 +39,6 @@ Once the exact start times are figured out, convert back to real time
 
 
 """
-
 from .task import Task, TaskGraph, TaskDifficulty
 from gcsa.google_calendar import GoogleCalendar, Event
 from gcsa.event import Transparency
@@ -56,7 +55,11 @@ from copy import deepcopy
 import logging
 import collections
 
-fmt_date = lambda d: d.astimezone(pytz.timezone("UTC")).strftime("%m/%d/%Y, %H:%M:%S")
+DEFAULT_TIMEZONE = "Europe/London"
+
+fmt_date = lambda d: d.astimezone(pytz.timezone(DEFAULT_TIMEZONE)).strftime(
+    "%m/%d/%Y, %H:%M:%S"
+)
 
 
 def get_calendars(
@@ -88,7 +91,7 @@ def get_availability(
     end_time: datetime,
     transparent_as_free: bool = True,
     split_across_days: bool = True,
-    default_timezone: Optional[str] = "UTC",
+    default_timezone: Optional[str] = DEFAULT_TIMEZONE,
 ) -> List[Tuple[datetime, datetime]]:
     """Get availability in a particular time range
 
@@ -122,9 +125,9 @@ def get_availability(
             events.append(event)
 
     # Sort events by increasing time
-    events.sort()
-    convert_dates_to_datetimes(events)
+    convert_dates_to_datetimes(events, default_timezone)
     events = _remove_duplicates(events)
+    events.sort()
 
     # Specify availability as a list of times where there aren't events
     availabilities = []
@@ -151,14 +154,13 @@ def get_availability(
             availabilities.extend(availability)
         if prev_event.end > latest_end:
             latest_end = prev_event.end
-    if events[-1].end < end_time:
+    if latest_end < end_time:
         availability = (
             _split_across_days((events[-1].end, end_time))
             if split_across_days
-            else [(events[-1].end, end_time)]
+            else [(latest_end, end_time)]
         )
         availabilities.extend(availability)
-
     return availabilities
 
 
@@ -196,9 +198,7 @@ def _split_across_days(
     return availabilities
 
 
-def convert_dates_to_datetimes(
-    events: List[Event], default_timezone: Optional[str] = "UTC"
-):
+def convert_dates_to_datetimes(events: List[Event], default_timezone: str):
     timezone = pytz.timezone(default_timezone)
     for event in events:
         if type(event.start) == date:
@@ -212,7 +212,124 @@ def convert_dates_to_datetimes(
                 )
             )
         if type(event.end) == date:
-            event.end = timezone.localize(datetime.combine(event.end, time(23, 59, 59)))
+            event.end = timezone.localize(
+                datetime.combine(event.end - timedelta(days=1), time(23, 59, 59))
+            )
+
+
+def filter_availabilities(
+    availabilities: List[Tuple[datetime, datetime]],
+    work_times: Dict[int, Tuple[time, time]],
+    work_timezone: str = DEFAULT_TIMEZONE,
+) -> List[Tuple[datetime, datetime]]:
+    """Filter availabilities to work times
+
+    Arguments
+    --------
+    availabilities : List[Tuple[datetime, datetime]]
+        A list of start and end times of each available block.
+        Assumes availabilities are broken up across days.
+    work_times : Dict[int, Tuple[time, time]]
+        A dictionary with keys as days of the week by integer starting with Monday as 0.
+        Values should be tuples with the start and end time of work on that day.
+    work_timezone : st
+        Timezone of the work times
+    """
+
+    new_availabilities = []
+    # Convert everything to the work timezone
+    tz = pytz.timezone(work_timezone)
+    availabilities = [
+        (a[0].astimezone(tz), a[1].astimezone(tz)) for a in availabilities
+    ]
+
+    for availability in availabilities:
+        n_days = math.ceil(
+            (availability[1] - availability[0]).total_seconds() / (3600 * 24)
+        )
+        current_availability = availability
+        while n_days > 0:
+            work_day = work_times.get(current_availability[0].weekday())
+            skip_current_day = False
+            if work_day is not None:
+                # Move availabilities starting before working hours to beginning of work time
+                if current_availability[0].time() < work_day[0]:
+                    current_availability = (
+                        datetime.combine(
+                            current_availability[0].date(),
+                            work_day[0],
+                            tzinfo=current_availability[1].tzinfo,
+                        ),
+                        current_availability[1],
+                    )
+                # If availability starts after work time, skip
+                elif current_availability[0].time() > work_day[1]:
+                    skip_current_day = True
+
+                # If on final day and current availability ends after specified end, move back to specified
+                final_day = current_availability[1].date() == availability[1].date()
+                if (
+                    final_day
+                    and current_availability[1].time() > availability[1].time()
+                ):
+                    current_availability = (
+                        current_availability[0],
+                        datetime.combine(
+                            availability[1].date(),
+                            availability[1].time(),
+                            tzinfo=availability[1].tzinfo,
+                        ),
+                    )
+
+                same_day = (
+                    current_availability[0].date() == current_availability[1].date()
+                )
+                # If availability ends before work time begins on the same day, move on
+                if same_day and (current_availability[1].time() < work_day[0]):
+                    skip_current_day = True
+                # If availabiltiy ends after work time on the same day, move it to the end of work time
+                elif (
+                    same_day and current_availability[1].time() > work_day[1]
+                ) or not same_day:
+                    current_availability = (
+                        current_availability[0],
+                        datetime.combine(
+                            current_availability[1].date(),
+                            work_day[1],
+                            tzinfo=current_availability[1].tzinfo,
+                        ),
+                    )
+
+                if not skip_current_day:
+                    new_availabilities.append(current_availability)
+
+            # Move to next day
+            next_day = current_availability[0].date() + timedelta(days=1)
+            new_times = work_times.get(
+                next_day.weekday(),
+                [
+                    current_availability[0].time(),
+                    current_availability[1].time(),
+                ],
+            )
+            current_availability = (
+                tz.localize(
+                    datetime.combine(
+                        next_day,
+                        new_times[0],
+                    )
+                ),
+                tz.localize(
+                    datetime.combine(
+                        next_day,
+                        new_times[1],
+                    )
+                ),
+            )
+
+            # Decrement number days
+            n_days -= 1
+    return new_availabilities
 
 
 def find_start_tasks(tasks: TaskGraph) -> List[Task]:
@@ -359,53 +476,6 @@ def _optimize_timing(
     else:
         raise ValueError("No solution found")
     return new_tasks
-
-
-def filter_availabilities(
-    availabilities: List[Tuple[datetime, datetime]],
-    work_times: Dict[int, Tuple[time, time]],
-) -> List[Tuple[datetime, datetime]]:
-    """Filter availabilities to work times
-
-    Arguments
-    --------
-    availabilities : List[Tuple[datetime, datetime]]
-        A list of start and end times of each available block.
-        Assumes availabilities are broken up across days.
-    work_times : Dict[int, Tuple[time, time]]
-        A dictionary with keys as days of the week by integer starting with Monday as 0.
-        Values should be tuples with the start and end time of work on that day.
-
-    """
-    new_availabilities = []
-    for availability in availabilities:
-        work_day = work_times.get(availability[0].day)
-        if work_day is None:
-            # Skip non-work days
-            continue
-        if (availability[0].time() > work_day[1]) or (
-            availability[1].time() < work_day[0]
-        ):
-            # Skip availabilities completely outside work day
-            continue
-        if availability[0].time() < work_day[0]:
-            # Move availabilities starting before working to beginning of work itime
-            availability = (
-                datetime.combine(
-                    availability[0].date(), work_day[0], tzinfo=availability[0].tzinfo
-                ),
-                availability[1],
-            )
-        if availability[1].time() > work_day[1]:
-            # Moove availabilities ending after work day to end at work day end
-            availability = (
-                availability[0],
-                datetime.combine(
-                    availability[0].date(), work_day[1], tzinfo=availability[0].tzinfo
-                ),
-            )
-        new_availabilities.append(availability)
-    return new_availabilities
 
 
 def convert_datetime_to_model_hours(start_time: datetime, time: datetime) -> int:
@@ -606,6 +676,9 @@ def optimize_schedule(
     logger.info(
         f"Total available time before filtering: {total_available_time:.01f} hours"
     )
+    print("All availabilities")
+    for a in availabilities:
+        print(fmt_date(a[0]), " -  ", fmt_date(a[1]))
 
     # Filter availabilities to work times
     filtered_availabilities = filter_availabilities(availabilities, work_times)
@@ -614,13 +687,6 @@ def optimize_schedule(
         [(a[1] - a[0]).total_seconds() / 3600 for a in filtered_availabilities]
     )
     logger.debug(f"Total available time: {total_available_time:.01f} hours")
-    filtered_availabilities = availabilities
-
-    for a in availabilities:
-        print(fmt_date(a[0]), " -  ", fmt_date(a[1]))
-    import pdb
-
-    pdb.set_trace()
 
     # Split tasks into blocks
     if block_duration is None:
