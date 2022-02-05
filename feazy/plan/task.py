@@ -168,6 +168,8 @@ class TaskGraph(Graph):
     def add_dependency(
         self, source_task_id: str, successor_task_id: str
     ) -> Tuple[Node, Node]:
+        if source_task_id == successor_task_id:
+            raise ValueError("A task cannot be a predecessor of itself.")
         source_node = self.get_node(source_task_id)
         destination_node = self.get_node(successor_task_id)
 

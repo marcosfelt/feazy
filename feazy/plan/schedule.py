@@ -434,7 +434,7 @@ def breakdown_availabilities(
     return new_availabilities
 
 
-def _optimize_timing(
+def optimize_timing(
     tasks: TaskGraph,
     availabilities: List[Tuple[datetime, datetime]],
     block_duration: timedelta,
@@ -529,7 +529,11 @@ def create_optimization_model_time_based(
         end = convert_datetime_to_model_hours(start_time, availabilities[i][0])
         size = end - start
         if i >= 2:
-            assert availabilities[i - 1][0] > availabilities[i - 2][1]
+            check = availabilities[i - 1][0] > availabilities[i - 2][1]
+            if not check:
+                raise ValueError(
+                    f"{fmt_date(availabilities[i - 1][0])} does not come after {fmt_date(availabilities[i - 2][1])}"
+                )
         if size > 0:
             busy_intervals.append(
                 model.NewFixedSizeIntervalVar(start, size, f"busy_interval_{i}")
@@ -712,7 +716,7 @@ def optimize_schedule(
         raise ValueError("Block duration cannot be less than 1 hour")
 
     # Solve the internal optimization problem using pyomo
-    scheduled_tasks = _optimize_timing(
+    scheduled_tasks = optimize_timing(
         tasks=tasks,
         availabilities=filtered_availabilities,
         start_time=start_time,
