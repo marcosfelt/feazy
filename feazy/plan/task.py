@@ -193,6 +193,7 @@ class TaskGraph(Graph):
         scheduled_tasks.sort(key=lambda t: t.scheduled_start, reverse=False)
         start_time: datetime = scheduled_tasks[0].scheduled_start
         d = int((end_time - start_time).total_seconds() / (3600 * 24) / 50)
+        d = 1 if d == 0 else d
         for task in scheduled_tasks:
             values = [task.task_id, task.description, task.scheduled_start]
             repr += "".join(

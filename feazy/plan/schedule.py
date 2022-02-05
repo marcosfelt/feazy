@@ -226,14 +226,18 @@ def filter_availabilities(
 
     Arguments
     --------
-    availabilities : List[Tuple[datetime, datetime]]
+    availabilities : List[Tuple[time, time]]
         A list of start and end times of each available block.
-        Assumes availabilities are broken up across days.
     work_times : Dict[int, Tuple[time, time]]
         A dictionary with keys as days of the week by integer starting with Monday as 0.
         Values should be tuples with the start and end time of work on that day.
-    work_timezone : st
+    work_timezone : string
         Timezone of the work times
+
+    Returns
+    -------
+    new_availabilities : List[Tuple[time, time]]
+        List of availabilities filtered to work times
     """
 
     new_availabilities = []
@@ -354,7 +358,7 @@ def find_start_tasks(tasks: TaskGraph) -> List[Task]:
 
 
 def breakdown_tasks(tasks: TaskGraph, block_duration: timedelta) -> TaskGraph:
-    """Breakdown tasks into smaller tasks + breaks according to schedule rules"""
+    """Breakdown tasks into smaller blocks"""
     new_tasks = deepcopy(
         tasks
     )  # New tasks graph for inserting breaks and broken down blocks
@@ -372,33 +376,6 @@ def breakdown_tasks(tasks: TaskGraph, block_duration: timedelta) -> TaskGraph:
         while not visit_queue.empty():
             current_task = visit_queue.get(block=True)
             if current_task not in visited_tasks:
-                # schedule_rule = schedule_rules[current_task.difficulty]
-
-                # Insert break before
-                # break_before = schedule_rule.break_duration_before
-                # if break_before > 0:
-                #     new_break = Task(
-                #         TaskDifficulty.EASY,
-                #         duration=break_before,
-                #         description="Break before next task",
-                #     )
-                #     new_tasks.add_task(new_break)
-                #     predecessors_ids = []
-                #     for t in new_tasks.graph_search(
-                #         start_task.task_id, type=GraphSearch.BFS
-                #     ):
-                #         if current_task in t.adjacents:
-                #             predecessors_ids.append(t.task_id)
-                #         elif t == current_task:
-                #             break
-
-                #     for predecessor_id in predecessors_ids:
-                #         new_tasks.remove_dependency(
-                #             predecessor_id, current_task.task_id
-                #         )
-                #         new_tasks.add_dependency(predecessor_id, new_break.task_id)
-                #     new_tasks.add_dependency(new_break.task_id, current_task.task_id)
-
                 # Break up task if necessary
                 if current_task.duration > block_duration:
                     n_blocks = int(math.ceil(current_task.duration / block_duration))
@@ -423,19 +400,6 @@ def breakdown_tasks(tasks: TaskGraph, block_duration: timedelta) -> TaskGraph:
                 else:
                     last_block = new_tasks[current_task.task_id]
 
-                # Insert break after
-                # break_after = schedule_rule.break_duration_after
-                # if break_after > 0:
-                #     new_break = Task(
-                #         TaskDifficulty.EASY,
-                #         duration=break_before,
-                #         description="Break after previous task",
-                #     )
-                #     new_tasks.add_task(new_break)
-                #     for adj in last_block.adjacents:
-                #         new_tasks.remove_dependency(last_block.task_id, adj.task_id)
-                #         new_tasks.add_dependency(new_break.task_id, adj.task_id)
-
                 # Add new adjacents
                 for adj in current_task.adjacents:
                     if adj not in visited_tasks:
@@ -447,9 +411,26 @@ def breakdown_tasks(tasks: TaskGraph, block_duration: timedelta) -> TaskGraph:
     return new_tasks
 
 
+def breakdown_availabilities(
+    availabilities: List[Tuple[datetime, datetime]],
+    block_duration: timedelta,
+):
+    new_availabilities = []
+    for availability in availabilities:
+        dt = availability[1] - availability[0]
+        if dt >= block_duration:
+            n_blocks = int(math.floor(dt / block_duration))
+            next_block = (availability[0], availability[0] + block_duration)
+            for _ in range(n_blocks):
+                new_availabilities.append(next_block)
+                next_block = (next_block[1], next_block[1] + block_duration)
+    return new_availabilities
+
+
 def _optimize_timing(
     tasks: TaskGraph,
     availabilities: List[Tuple[datetime, datetime]],
+    block_duration: timedelta,
     start_time: Optional[datetime] = None,
     deadline: Optional[datetime] = None,
 ) -> TaskGraph:
@@ -462,9 +443,15 @@ def _optimize_timing(
     if deadline is None:
         deadline = availabilities[-1][0]
 
+    # Split tasks into blocks
+    task_blocks = breakdown_tasks(tasks, block_duration=block_duration)
+    logger.debug(
+        f"Number of tasks to schedule (after breaking down): {len(task_blocks.all_tasks)}."
+    )
+
     # Formulate and solve optimization problem
-    model, early_vars, late_vars = create_optimization_model(
-        tasks, availabilities, start_time, deadline
+    model, early_vars, late_vars = create_optimization_model_time_based(
+        task_blocks, availabilities, start_time, deadline
     )
     solver, status = solve_cpsat(model)
 
@@ -486,7 +473,38 @@ def convert_model_hours_to_datetime(start_time: datetime, hours: int) -> datetim
     return start_time + timedelta(hours=hours)
 
 
-def create_optimization_model(
+def create_optimization_model_block_based(
+    tasks: TaskGraph,
+    availabilities: List[Tuple[datetime, datetime]],
+    start_time: datetime,
+    deadline: datetime,
+) -> cp_model.CpModel:
+    """This assumes tasks and availabliities are in the same block duration"""
+    # Create model
+    model = cp_model.CpModel()
+
+    # Create assignment dictionary as the cross product of task blocks and availabilities
+    assign = {}
+    for task in tasks.all_tasks:
+        for i, _ in enumerate(availabilities):
+            assign[(task.task_id, i)] = model.NewBoolVar(f"x{task.task_id}_{i}")
+    n_blocks = len(availabilities)
+    count = model.NewIntVar(0, n_blocks, "count")
+    block_used = [model.NewBoolVar(f"block_used[{i}]") for i in range(n_blocks)]
+
+    # Make sure each task gets assigned to one available block
+    for task in tasks.all_tasks:
+        model.Add(sum([assign[(task.task_id, i)] for i in range(n_blocks)]) == 1)
+
+    # Task dependencies - for each task, make sure it's adjacents are assigned to a block after it
+    for task in tasks.all_tasks:
+        model.AddBoolAnd()
+
+    # Mark blocks as not available once they have a task assigned
+    pass
+
+
+def create_optimization_model_time_based(
     tasks: TaskGraph,
     availabilities: List[Tuple[datetime, datetime]],
     start_time: datetime,
@@ -526,30 +544,25 @@ def create_optimization_model(
                 start=start_var, end=end_var, interval=interval_var
             )
 
-    # Availabilities
+    # Block out non-available times
     availabilities.sort(key=lambda a: a[0], reverse=False)
     busy_intervals = []
-    for task in tasks.all_tasks:
-        for i in range(1, len(availabilities)):
-            start = convert_datetime_to_model_hours(
-                start_time, availabilities[i - 1][1]
+    for i in range(1, len(availabilities)):
+        start = convert_datetime_to_model_hours(start_time, availabilities[i - 1][1])
+        end = convert_datetime_to_model_hours(start_time, availabilities[i][0])
+        size = end - start
+        # if i >= 2:
+        #     assert availabilities[i - 1][0] > availabilities[i - 2][1]
+        if size > 0:
+            busy_intervals.append(
+                model.NewFixedSizeIntervalVar(start, size, f"busy_interval_{i}")
             )
-            end = convert_datetime_to_model_hours(start_time, availabilities[i][0])
-            size = end - start
-            if i >= 2:
-                assert availabilities[i - 1][0] > availabilities[i - 2][1]
-            if size > 0:
-                busy_intervals.append(
-                    model.NewIntervalVar(start, size, end, f"busy_interval_{i}")
-                )
 
     # No overlap constraint with availability constraints
-    # for var_group in [early_vars, late_vars]:
-    #     model.AddNoOverlap([group.interval for group in var_group.values()])
-    model.AddNoOverlap(
-        [group.interval for group in early_vars.values()] + busy_intervals
-    )
-    model.AddNoOverlap([group.interval for group in late_vars.values()])
+    for var_group in [early_vars, late_vars]:
+        model.AddNoOverlap(
+            [group.interval for group in var_group.values()] + busy_intervals
+        )
 
     # Precedence constraint
     for task in tasks.all_tasks:
@@ -572,7 +585,9 @@ def create_optimization_model(
             for task in tasks.all_tasks
         ]
     )
-    late_finish_obj_var = model.NewIntVar(0, project_deadline_hours, "late_finish")
+    late_finish_obj_var = model.NewIntVar(
+        0, project_deadline_hours * len(early_vars), "late_finish"
+    )
     model.AddMaxEquality(
         late_finish_obj_var,
         [late_vars[task.task_id].end for task in tasks.all_tasks],
@@ -605,12 +620,38 @@ def post_process_solution(
     return tasks
 
 
-def solve_cpsat(model: cp_model.CpModel) -> None:
+class SolutionCallback(cp_model.CpSolverSolutionCallback):
+    def __init__(self, max_solutions: int):
+        cp_model.CpSolverSolutionCallback.__init__(self)
+        self._solution_count = 0
+        self._solution_limit = max_solutions
+
+    def OnSolutionCallback(self):
+        return self.on_solution_callback()
+
+    def on_solution_callback(self):
+        self._solution_count += 1
+
+        if self._solution_count > self._solution_limit:
+            print(f"Stop search after {self._solution_count} solutions.")
+            self.StopSearch()
+
+    @property
+    def solution_count(self):
+        return self._solution_count
+
+
+def solve_cpsat(
+    model: cp_model.CpModel, max_solutions=10, num_workers=6, log_search_progress=True
+) -> None:
     """Solve optimization problem using CpSAT"""
     logger = logging.getLogger(__name__)
     logger.debug("Solving optimization problem using CPSat")
     solver = cp_model.CpSolver()
-    status = solver.Solve(model)
+    solver.parameters.log_search_progress = log_search_progress
+    solver.parameters.num_search_workers = num_workers
+    cb = SolutionCallback(max_solutions)
+    status = solver.Solve(model, solution_callback=cb)
     return solver, status
 
 
@@ -676,9 +717,6 @@ def optimize_schedule(
     logger.info(
         f"Total available time before filtering: {total_available_time:.01f} hours"
     )
-    print("All availabilities")
-    for a in availabilities:
-        print(fmt_date(a[0]), " -  ", fmt_date(a[1]))
 
     # Filter availabilities to work times
     filtered_availabilities = filter_availabilities(availabilities, work_times)
@@ -686,24 +724,25 @@ def optimize_schedule(
     total_available_time = sum(
         [(a[1] - a[0]).total_seconds() / 3600 for a in filtered_availabilities]
     )
-    logger.debug(f"Total available time: {total_available_time:.01f} hours")
+    logger.info(
+        f"Total available time after filtering: {total_available_time:.01f} hours"
+    )
+    for a in filtered_availabilities:
+        print(fmt_date(a[0]), "-", fmt_date(a[1]))
 
-    # Split tasks into blocks
+    # Block duration default
     if block_duration is None:
         block_duration = timedelta(hours=1)
     if block_duration < timedelta(hours=1):
         raise ValueError("Block duration cannot be less than 1 hour")
-    mini_tasks = breakdown_tasks(tasks, block_duration=block_duration)
-    logging.info(
-        f"Number of tasks to schedule (after breaking down): {len(mini_tasks.all_tasks)}."
-    )
 
     # Solve the internal optimization problem using pyomo
     scheduled_tasks = _optimize_timing(
-        tasks=mini_tasks,
+        tasks=tasks,
         availabilities=filtered_availabilities,
         start_time=start_time,
         deadline=deadline,
+        block_duration=block_duration,
     )
 
     return scheduled_tasks
