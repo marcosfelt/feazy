@@ -34,7 +34,7 @@ def main_optimization(main_calendar="kobi.c.f@gmail.com"):
     # Start time and deadline
     timezone = pytz.timezone("Europe/London")
     start_time = timezone.localize((May / 1 / 2022)[00:00])
-    deadline = start_time + 14 * days
+    deadline = start_time + 21 * days
 
     # Work Times (9-5 M-F)
     work_times = {

@@ -292,15 +292,22 @@ def filter_availabilities(
                 if same_day and (current_availability[1].time() < work_day[0]):
                     skip_current_day = True
                 # If availabiltiy ends after work time on the same day, move it to the end of work time
-                elif (
-                    same_day and current_availability[1].time() > work_day[1]
-                ) or not same_day:
+                elif same_day and current_availability[1].time() > work_day[1]:
                     current_availability = (
                         current_availability[0],
                         datetime.combine(
                             current_availability[1].date(),
                             work_day[1],
                             tzinfo=current_availability[1].tzinfo,
+                        ),
+                    )
+                if not same_day:
+                    current_availability = (
+                        current_availability[0],
+                        datetime.combine(
+                            current_availability[0].date(),
+                            work_day[1],
+                            tzinfo=current_availability[0].tzinfo,
                         ),
                     )
 
@@ -433,6 +440,7 @@ def _optimize_timing(
     block_duration: timedelta,
     start_time: Optional[datetime] = None,
     deadline: Optional[datetime] = None,
+    max_solutions: Optional[int] = 10,
 ) -> TaskGraph:
     """Optimize timing using CpSAT solver"""
     logger = logging.getLogger(__name__)
@@ -453,12 +461,12 @@ def _optimize_timing(
     model, early_vars, late_vars = create_optimization_model_time_based(
         task_blocks, availabilities, start_time, deadline
     )
-    solver, status = solve_cpsat(model)
+    solver, status = solve_cpsat(model, max_solutions=max_solutions)
 
     # Update tasks with scheduled start times and deadlines
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
         new_tasks = post_process_solution(
-            solver, tasks, start_time, early_vars, late_vars
+            solver, task_blocks, start_time, early_vars, late_vars
         )
     else:
         raise ValueError("No solution found")
@@ -471,37 +479,6 @@ def convert_datetime_to_model_hours(start_time: datetime, time: datetime) -> int
 
 def convert_model_hours_to_datetime(start_time: datetime, hours: int) -> datetime:
     return start_time + timedelta(hours=hours)
-
-
-def create_optimization_model_block_based(
-    tasks: TaskGraph,
-    availabilities: List[Tuple[datetime, datetime]],
-    start_time: datetime,
-    deadline: datetime,
-) -> cp_model.CpModel:
-    """This assumes tasks and availabliities are in the same block duration"""
-    # Create model
-    model = cp_model.CpModel()
-
-    # Create assignment dictionary as the cross product of task blocks and availabilities
-    assign = {}
-    for task in tasks.all_tasks:
-        for i, _ in enumerate(availabilities):
-            assign[(task.task_id, i)] = model.NewBoolVar(f"x{task.task_id}_{i}")
-    n_blocks = len(availabilities)
-    count = model.NewIntVar(0, n_blocks, "count")
-    block_used = [model.NewBoolVar(f"block_used[{i}]") for i in range(n_blocks)]
-
-    # Make sure each task gets assigned to one available block
-    for task in tasks.all_tasks:
-        model.Add(sum([assign[(task.task_id, i)] for i in range(n_blocks)]) == 1)
-
-    # Task dependencies - for each task, make sure it's adjacents are assigned to a block after it
-    for task in tasks.all_tasks:
-        model.AddBoolAnd()
-
-    # Mark blocks as not available once they have a task assigned
-    pass
 
 
 def create_optimization_model_time_based(
@@ -551,8 +528,8 @@ def create_optimization_model_time_based(
         start = convert_datetime_to_model_hours(start_time, availabilities[i - 1][1])
         end = convert_datetime_to_model_hours(start_time, availabilities[i][0])
         size = end - start
-        # if i >= 2:
-        #     assert availabilities[i - 1][0] > availabilities[i - 2][1]
+        if i >= 2:
+            assert availabilities[i - 1][0] > availabilities[i - 2][1]
         if size > 0:
             busy_intervals.append(
                 model.NewFixedSizeIntervalVar(start, size, f"busy_interval_{i}")
@@ -727,8 +704,6 @@ def optimize_schedule(
     logger.info(
         f"Total available time after filtering: {total_available_time:.01f} hours"
     )
-    for a in filtered_availabilities:
-        print(fmt_date(a[0]), "-", fmt_date(a[1]))
 
     # Block duration default
     if block_duration is None:
@@ -743,6 +718,7 @@ def optimize_schedule(
         start_time=start_time,
         deadline=deadline,
         block_duration=block_duration,
+        max_solutions=5,
     )
 
     return scheduled_tasks

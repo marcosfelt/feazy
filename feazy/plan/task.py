@@ -206,6 +206,7 @@ class TaskGraph(Graph):
             repr += "|"
             dur = int(task.duration.total_seconds() / (3600 * 24) / d)  # In days
             repr += "|" * dur
+            dur
             repr += "\n"
         return repr
 
