@@ -127,6 +127,9 @@ class Graph:
                 for adjacent in node.adjacents:
                     visit_list.put(adjacent)
 
+    def _is_cyclic(self):
+        pass
+
     @property
     def nodes(self) -> List[Node]:
         return [n for n in self._nodes.values()]

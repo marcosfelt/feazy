@@ -1,10 +1,11 @@
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, date
 from feazy.plan import (
     Task,
     TaskGraph,
     read_file,
     optimize_schedule,
     download_notion_tasks,
+    update_notion_tasks,
 )
 from gcsa.google_calendar import GoogleCalendar
 import pytz
@@ -75,10 +76,12 @@ def test_optimization(main_calendar="kobi.c.f@gmail.com"):
 
 
 def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
+    logger = logging.getLogger(__name__)
+
     # Start time and deadline
     timezone = pytz.timezone("Europe/London")
     start_time = timezone.localize((Feb / 7 / 2022)[00:00])
-    deadline = start_time + 325 * days
+    deadline = start_time + 300 * days
 
     # Read in tasks and dependencies
     database_id = "89357b5cf7c749d6872a32636375b064"
@@ -115,14 +118,28 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
         ],
         block_duration=timedelta(hours=2),
     )
+
+    # Update schedule in notion
     print(new_tasks)
+    logging.info("Updating tasks in Notion")
+    update_notion_tasks(new_tasks)
+    logging.info("Saved scheduled tasks to Notion")
 
 
 if __name__ == "__main__":
+    # timezone = pytz.timezone("Europe/London")
+    # start_time = timezone.localize((Feb / 7 / 2022)[00:00])
+    # database_id = "89357b5cf7c749d6872a32636375b064"
+    # tasks = download_notion_tasks(database_id=database_id, start_time=start_time)
+    # t = tasks.all_tasks[0]
+    # t.scheduled_start = date(2022, 2, 14)
+    # t.scheduled_deadline = date(2022, 2, 28)
+    # print(t)
+
     start = datetime.now()
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
-    notion_task_optimization()()
+    notion_task_optimization()
     end = datetime.now()
     delta = (end - start).total_seconds() / 60
     logging.info(f"Took {delta:.01f} minutes to run")

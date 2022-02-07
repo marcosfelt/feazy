@@ -1,29 +1,37 @@
-from multiprocessing.sharedctypes import Value
-import pdb
 from .task import Task, TaskGraph
-import os
-from notion_client import Client
+from notion_client import Client, AsyncClient
 from dotenv import load_dotenv
 from datetime import timedelta, datetime
 import pytz
+import warnings
+import asyncio
+import os
 
 
 load_dotenv()  # take environment variables from .env.
 import logging
 
 
+def connect_notion(logger, use_async=False) -> Client:
+    # Connect notion
+    token = os.environ.get("NOTION_TOKEN")
+    if token is None:
+        raise ValueError("No notion token found in environment varaibles")
+    if use_async:
+        return AsyncClient(auth=token, logger=logger)
+    else:
+        return Client(auth=token, logger=logger)
+
+
 def download_notion_tasks(
     database_id: str,
     start_time: datetime,
     timezone="Europe/London",
-):
+) -> TaskGraph:
     logger = logging.getLogger(__name__)
 
-    # Connect notion
-    token = os.environ.get("NOTION_TOKEN")
-    if token is None:
-        raise ValueError("No notion token found")
-    notion = Client(auth=token, logger=logger)
+    # Connect to notion
+    notion = connect_notion(logger)
 
     # Get all uncompleted tasks
     query = {"filter": {"property": "Complete", "checkbox": {"equals": False}}}
@@ -34,7 +42,6 @@ def download_notion_tasks(
     # from pprint import pprint
 
     # pprint(results[0])
-
     # import pdb
 
     # pdb.set_trace()
@@ -86,8 +93,20 @@ def download_notion_tasks(
         else:
             extracted_props["deadline"] = None
 
+        # Wait time
+        wait_time = props["Wait Time (days)"]
+        if wait_time:
+            w = wait_time.get("number")
+            w = w if w else 0
+            extracted_props["wait_time"] = timedelta(days=w)
+
         # Create task
-        tasks.add_task(Task(**extracted_props))
+        if duration and to_do:
+            tasks.add_task(Task(**extracted_props))
+        else:
+            warnings.warn(
+                f"""Did not add {extracted_props["task_id"]} because missing description or duration."""
+            )
 
     # Add task depdendencies
     for result in results:
@@ -100,6 +119,47 @@ def download_notion_tasks(
                     tasks.add_dependency(predecessor, task_id)
 
     return tasks
+
+
+async def _update_notion_tasks(tasks: TaskGraph):
+    """"""
+    logger = logging.getLogger(__name__)
+
+    # Connect to notion
+    async_notion = connect_notion(logger, use_async=True)
+
+    # Update notion tasks
+    fmt_date = lambda d: d.strftime("%Y-%m-%d")
+    requests = []
+    for task in tasks.all_tasks:
+        if task.scheduled_early_start or task.scheduled_deadline:
+            props = {
+                "Scheduled Early Start": {
+                    "date": {"start": fmt_date(task.scheduled_early_start)}
+                },
+                "Scheduled Late Start": {
+                    "date": {"start": fmt_date(task.scheduled_late_start)}
+                },
+                "Scheduled Early Finish": {
+                    "date": {"start": fmt_date(task.scheduled_finish)}
+                },
+                "Scheduled Due Date": {
+                    "date": {"start": fmt_date(task.scheduled_deadline)}
+                },
+            }
+            requests.append(
+                async_notion.pages.update(
+                    **{"page_id": task.task_id, "properties": props}
+                )
+            )
+
+    # Send requests
+    await asyncio.gather(*requests)
+    await asyncio.close()
+
+
+def update_notion_tasks(tasks: TaskGraph):
+    asyncio.run(_update_notion_tasks(tasks))
 
 
 def get_page_url(page_id: str):

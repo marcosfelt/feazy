@@ -39,7 +39,8 @@ Once the exact start times are figured out, convert back to real time
 
 
 """
-from .task import Task, TaskGraph, TaskDifficulty
+from xxlimited import new
+from .task import Task, TaskGraph
 from gcsa.google_calendar import GoogleCalendar, Event
 from gcsa.event import Transparency
 from beautiful_date import *
@@ -50,10 +51,10 @@ from queue import LifoQueue
 import pytz
 import math
 import numpy as np
-import pandas as pd
 from copy import deepcopy
 import logging
 import collections
+import re
 
 DEFAULT_TIMEZONE = "Europe/London"
 
@@ -418,20 +419,92 @@ def breakdown_tasks(tasks: TaskGraph, block_duration: timedelta) -> TaskGraph:
     return new_tasks
 
 
-def breakdown_availabilities(
-    availabilities: List[Tuple[datetime, datetime]],
-    block_duration: timedelta,
-):
-    new_availabilities = []
-    for availability in availabilities:
-        dt = availability[1] - availability[0]
-        if dt >= block_duration:
-            n_blocks = int(math.floor(dt / block_duration))
-            next_block = (availability[0], availability[0] + block_duration)
-            for _ in range(n_blocks):
-                new_availabilities.append(next_block)
-                next_block = (next_block[1], next_block[1] + block_duration)
-    return new_availabilities
+def consolidate_tasks(original_tasks: TaskGraph, block_tasks: TaskGraph) -> TaskGraph:
+    """Consolidate tasks after breadking them down"""
+    new_tasks = deepcopy(
+        original_tasks
+    )  # New tasks graph for inserting breaks and broken down blocks
+
+    # Find starting tasks
+    start_tasks = find_start_tasks(block_tasks)
+
+    # Consolidate tasks
+    visit_queue = LifoQueue()  # LIFO queue (stack) for doing depth first search
+    visited_tasks = []
+    for start_task in start_tasks:
+        for adj in start_task.adjacents:
+            visit_queue.put(adj)
+
+        while not visit_queue.empty():
+            current_task = visit_queue.get(block=True)
+            if current_task not in visited_tasks:
+                task_id = current_task.task_id
+                split = task_id.split("_")
+                if len(split) > 0:
+                    id = split[0]
+                    # Scheduled early start
+                    if new_tasks[id].scheduled_early_start is not None:
+                        if (
+                            current_task.scheduled_early_start
+                            < new_tasks[id].scheduled_early_start
+                        ):
+                            new_tasks[
+                                id
+                            ].scheduled_early_start = current_task.scheduled_early_start
+                    else:
+                        new_tasks[
+                            id
+                        ].scheduled_early_start = current_task.scheduled_early_start
+
+                    # Scheduled late start
+                    if new_tasks[id].scheduled_late_start is not None:
+                        if (
+                            current_task.scheduled_late_start
+                            < new_tasks[id].scheduled_late_start
+                        ):
+                            new_tasks[
+                                id
+                            ].scheduled_late_start = current_task.scheduled_late_start
+                    else:
+                        new_tasks[
+                            id
+                        ].scheduled_late_start = current_task.scheduled_late_start
+
+                    # Scheduled finish
+                    if new_tasks[id].scheduled_finish is not None:
+                        if (
+                            current_task.scheduled_finish
+                            > new_tasks[id].scheduled_finish
+                        ):
+                            new_tasks[
+                                id
+                            ].scheduled_finish = current_task.scheduled_finish
+                    else:
+                        new_tasks[id].scheduled_finish = current_task.scheduled_finish
+
+                    # Scheduled deadline
+                    if new_tasks[id].scheduled_deadline is not None:
+                        if (
+                            current_task.scheduled_deadline
+                            > new_tasks[id].scheduled_deadline
+                        ):
+                            new_tasks[
+                                id
+                            ].scheduled_deadline = current_task.scheduled_deadline
+                    else:
+                        new_tasks[
+                            id
+                        ].scheduled_deadline = current_task.scheduled_deadline
+
+                # Add new adjacents
+                for adj in current_task.adjacents:
+                    if adj not in visited_tasks:
+                        visit_queue.put(adj, block=True)
+
+                # Mark current node as visited
+                visited_tasks.append(current_task)
+
+    return new_tasks
 
 
 def optimize_timing(
@@ -468,9 +541,13 @@ def optimize_timing(
         new_tasks = post_process_solution(
             solver, task_blocks, start_time, early_vars, late_vars
         )
+
+        # Consolidate tasks
+        consolidated_tasks = consolidate_tasks(tasks, new_tasks)
+
+        return consolidated_tasks
     else:
         raise ValueError("No solution found")
-    return new_tasks
 
 
 def convert_datetime_to_model_hours(start_time: datetime, time: datetime) -> int:
@@ -488,6 +565,7 @@ def create_optimization_model_time_based(
     deadline: datetime,
 ) -> Tuple[cp_model.CpModel, Dict, Dict]:
     """Create OR-tools optimization model. Time is in hours"""
+    logger = logging.getLogger(__name__)
     # Create model
     model = cp_model.CpModel()
 
@@ -495,6 +573,7 @@ def create_optimization_model_time_based(
     early_vars = {}
     late_vars = {}
     project_deadline_hours = convert_datetime_to_model_hours(start_time, deadline)
+    logger.debug(f"Project deadline hours: {project_deadline_hours}")
     task_type = collections.namedtuple("task_type", "start end interval")
     for task in tasks.all_tasks:
         for name, var_group in {
@@ -506,50 +585,58 @@ def create_optimization_model_time_based(
                 if task.earliest_start is None
                 else convert_datetime_to_model_hours(start_time, task.earliest_start)
             )
+            if lb < 0:
+                raise ValueError(
+                    f"""Task "{task.description}" starts before start time."""
+                )
             ub = (
                 project_deadline_hours
                 if task.deadline is None
                 else convert_datetime_to_model_hours(start_time, task.deadline)
             )
+            if ub > project_deadline_hours:
+                raise ValueError(
+                    f"""Task "{task.description}" deadline {fmt_date(task.deadline)} is greater than project deadline {deadline}."""
+                )
             start_var = model.NewIntVar(lb, ub, f"{name}_start_{task.task_id}")
-            end_var = model.NewIntVar(lb, ub, f"{name}_finish_{task.task_id}")
             dur = int(task.duration.total_seconds() / 3600)
-            interval_var = model.NewIntervalVar(
-                start_var, dur, end_var, f"{name}_interval_{task.task_id}"
+            interval_var = model.NewFixedSizeIntervalVar(
+                start_var, dur, f"{name}_interval_{task.task_id}"
             )
             var_group[task.task_id] = task_type(
-                start=start_var, end=end_var, interval=interval_var
+                start=start_var, end=start_var + dur, interval=interval_var
             )
 
-    # Block out non-available times
-    availabilities.sort(key=lambda a: a[0], reverse=False)
-    busy_intervals = []
-    for i in range(1, len(availabilities)):
-        start = convert_datetime_to_model_hours(start_time, availabilities[i - 1][1])
-        end = convert_datetime_to_model_hours(start_time, availabilities[i][0])
-        size = end - start
-        if i >= 2:
-            check = availabilities[i - 1][0] > availabilities[i - 2][1]
-            if not check:
-                raise ValueError(
-                    f"{fmt_date(availabilities[i - 1][0])} does not come after {fmt_date(availabilities[i - 2][1])}"
-                )
-        if size > 0:
-            busy_intervals.append(
-                model.NewFixedSizeIntervalVar(start, size, f"busy_interval_{i}")
-            )
+    # Define non-available intervals
+    # availabilities.sort(key=lambda a: a[0], reverse=False)
+    # busy_intervals = []
+    # for i in range(1, len(availabilities)):
+    #     start = convert_datetime_to_model_hours(start_time, availabilities[i - 1][1])
+    #     end = convert_datetime_to_model_hours(start_time, availabilities[i][0])
+    #     size = end - start
+    #     # Check for no overlapping availabilities
+    #     if i >= 2:
+    #         check = availabilities[i - 1][0] > availabilities[i - 2][1]
+    #         if not check:
+    #             raise ValueError(
+    #                 f"{fmt_date(availabilities[i - 1][0])} does not come after {fmt_date(availabilities[i - 2][1])}"
+    #             )
+    #     if size > 0:
+    #         busy_intervals.append(
+    #             model.NewFixedSizeIntervalVar(start, size, f"busy_interval_{i}")
+    #         )
 
     # No overlap constraint with availability constraints
     for var_group in [early_vars, late_vars]:
         model.AddNoOverlap(
-            [group.interval for group in var_group.values()] + busy_intervals
+            [group.interval for group in var_group.values()]  # + busy_intervals
         )
 
-    # Precedence constraint
+    # Precedence constraint with wait times
     for task in tasks.all_tasks:
         for var_group in [early_vars, late_vars]:
             for succ in task.successors:
-                wait_time = task.wait_time.total_seconds() / 3600
+                wait_time = int(task.wait_time.total_seconds() / 3600)
                 model.Add(
                     var_group[task.task_id].end + wait_time
                     <= var_group[succ.task_id].start
@@ -590,14 +677,14 @@ def post_process_solution(
     if copy:
         tasks = deepcopy(tasks)
     for task in tasks.all_tasks:
-        task.scheduled_start = convert_model_hours_to_datetime(
+        task.scheduled_early_start = convert_model_hours_to_datetime(
             start_time, solver.Value(early_vars[task.task_id].start)
         )
-        task.scheduled_deadline = (
-            convert_model_hours_to_datetime(
-                start_time, solver.Value(late_vars[task.task_id].start)
-            )
-        ) + task.duration
+        task.scheduled_finish = task.scheduled_early_start + task.duration
+        task.scheduled_late_start = convert_model_hours_to_datetime(
+            start_time, solver.Value(late_vars[task.task_id].start)
+        )
+        task.scheduled_deadline = task.scheduled_late_start + task.duration
     return tasks
 
 
@@ -698,16 +785,37 @@ def optimize_schedule(
     logger.info(
         f"Total available time before filtering: {total_available_time:.01f} hours"
     )
+    # for a in availabilities:
+    #     print(fmt_date(a[0]), "-", fmt_date(a[1]))
 
     # Filter availabilities to work times
     filtered_availabilities = filter_availabilities(availabilities, work_times)
     filtered_availabilities.sort(key=lambda d: d[0], reverse=False)
+    latest_start = start_time
+    latest_finish = start_time
+    for a in availabilities:
+        if a[0] >= latest_start:
+            latest_start = a[0]
+        else:
+            raise ValueError(f"{a[0]} is not ordered")
+
+        if a[1] >= latest_finish:
+            latest_finish = a[1]
+        else:
+            raise ValueError(f"{a[1]} is not ordered")
     total_available_time = sum(
         [(a[1] - a[0]).total_seconds() / 3600 for a in filtered_availabilities]
     )
     logger.info(
         f"Total available time after filtering: {total_available_time:.01f} hours"
     )
+
+    # Estimate if deadline is reasonable
+    total_time = sum([task.duration.total_seconds() for task in tasks.all_tasks]) / 3600
+    if total_time > total_available_time:
+        raise ValueError(
+            f"Total task time ({total_time}) is less than available time ({total_available_time})"
+        )
 
     # Block duration default
     if block_duration is None:
@@ -722,7 +830,7 @@ def optimize_schedule(
         start_time=start_time,
         deadline=deadline,
         block_duration=block_duration,
-        max_solutions=5,
+        max_solutions=2,
     )
 
     return scheduled_tasks
