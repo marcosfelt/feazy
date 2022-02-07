@@ -90,7 +90,7 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
 
     # Work Times (9-5 M-F)
     work_times = {
-        i: [time(hour=9, minute=0, second=0), time(hour=15, minute=0, second=0)]
+        i: [time(hour=9, minute=0, second=0), time(hour=14, minute=0, second=0)]
         for i in range(6)
     }
 
@@ -122,7 +122,7 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
 
     # Update schedule in notion
     print(new_tasks)
-    update_notion_tasks(new_tasks)
+    update_notion_tasks(new_tasks, use_async=True)
 
 
 if __name__ == "__main__":

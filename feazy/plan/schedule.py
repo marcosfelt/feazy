@@ -399,7 +399,7 @@ def breakdown_tasks(tasks: TaskGraph, block_duration: timedelta) -> TaskGraph:
                     last_block = new_tasks[current_task.task_id]
                     for b in range(n_blocks - 1):
                         new_block = Task(
-                            task_id=current_task.task_id + f"_{b}",
+                            task_id=current_task.task_id + f"_{b+2}",
                             duration=block_duration,
                             description=current_task.description
                             + f" (Block {b+2}/{n_blocks})",
@@ -426,90 +426,75 @@ def breakdown_tasks(tasks: TaskGraph, block_duration: timedelta) -> TaskGraph:
 
 def consolidate_tasks(original_tasks: TaskGraph, block_tasks: TaskGraph) -> TaskGraph:
     """Consolidate tasks after breadking them down"""
-    new_tasks = deepcopy(
-        original_tasks
-    )  # New tasks graph for inserting breaks and broken down blocks
-
-    # Find starting tasks
-    start_tasks = find_start_tasks(block_tasks)
+    new_tasks = deepcopy(original_tasks)
 
     # Consolidate tasks
-    visit_queue = LifoQueue()  # LIFO queue (stack) for doing depth first search
-    visited_tasks = []
-    for start_task in start_tasks:
-        for adj in start_task.adjacents:
-            visit_queue.put(adj)
+    for current_task in block_tasks.all_tasks:
+        task_id = current_task.task_id
+        split = task_id.split("_")
+        if len(split) > 1:
+            id = split[0]
+        else:
+            id = task_id
 
-        while not visit_queue.empty():
-            current_task = visit_queue.get(block=True)
-            if current_task not in visited_tasks:
-                task_id = current_task.task_id
-                split = task_id.split("_")
-                if len(split) > 0:
-                    id = split[0]
-                    # Scheduled early start
-                    if new_tasks[id].scheduled_early_start is not None:
-                        if (
-                            current_task.scheduled_early_start
-                            < new_tasks[id].scheduled_early_start
-                        ):
-                            new_tasks[
-                                id
-                            ].scheduled_early_start = current_task.scheduled_early_start
-                    else:
-                        new_tasks[
-                            id
-                        ].scheduled_early_start = current_task.scheduled_early_start
+        # Scheduled early start
+        if new_tasks[id].scheduled_early_start is not None:
+            if current_task.scheduled_early_start < new_tasks[id].scheduled_early_start:
+                new_tasks[id].scheduled_early_start = raise_none(
+                    current_task.scheduled_early_start
+                )
+        else:
+            new_tasks[id].scheduled_early_start = raise_none(
+                current_task.scheduled_early_start
+            )
+        raise_none(new_tasks[id].scheduled_early_start)
 
-                    # Scheduled late start
-                    if new_tasks[id].scheduled_late_start is not None:
-                        if (
-                            current_task.scheduled_late_start
-                            < new_tasks[id].scheduled_late_start
-                        ):
-                            new_tasks[
-                                id
-                            ].scheduled_late_start = current_task.scheduled_late_start
-                    else:
-                        new_tasks[
-                            id
-                        ].scheduled_late_start = current_task.scheduled_late_start
+        # Scheduled late start
+        if new_tasks[id].scheduled_late_start is not None:
+            if current_task.scheduled_late_start < new_tasks[id].scheduled_late_start:
+                new_tasks[id].scheduled_late_start = raise_none(
+                    current_task.scheduled_late_start
+                )
+        else:
+            new_tasks[id].scheduled_late_start = raise_none(
+                current_task.scheduled_late_start
+            )
+        raise_none(new_tasks[id].scheduled_late_start)
 
-                    # Scheduled finish
-                    if new_tasks[id].scheduled_finish is not None:
-                        if (
-                            current_task.scheduled_finish
-                            > new_tasks[id].scheduled_finish
-                        ):
-                            new_tasks[
-                                id
-                            ].scheduled_finish = current_task.scheduled_finish
-                    else:
-                        new_tasks[id].scheduled_finish = current_task.scheduled_finish
+        # Scheduled finish
+        if new_tasks[id].scheduled_early_finish is not None:
+            if (
+                current_task.scheduled_early_finish
+                > new_tasks[id].scheduled_early_finish
+            ):
+                new_tasks[id].scheduled_early_finish = raise_none(
+                    current_task.scheduled_early_finish
+                )
+        else:
+            new_tasks[id].scheduled_early_finish = raise_none(
+                current_task.scheduled_early_finish
+            )
+        raise_none(new_tasks[id].scheduled_early_finish)
 
-                    # Scheduled deadline
-                    if new_tasks[id].scheduled_deadline is not None:
-                        if (
-                            current_task.scheduled_deadline
-                            > new_tasks[id].scheduled_deadline
-                        ):
-                            new_tasks[
-                                id
-                            ].scheduled_deadline = current_task.scheduled_deadline
-                    else:
-                        new_tasks[
-                            id
-                        ].scheduled_deadline = current_task.scheduled_deadline
-
-                # Add new adjacents
-                for adj in current_task.adjacents:
-                    if adj not in visited_tasks:
-                        visit_queue.put(adj, block=True)
-
-                # Mark current node as visited
-                visited_tasks.append(current_task)
-
+        # Scheduled deadline
+        if new_tasks[id].scheduled_deadline is not None:
+            if current_task.scheduled_deadline > new_tasks[id].scheduled_deadline:
+                new_tasks[id].scheduled_deadline = raise_none(
+                    current_task.scheduled_deadline
+                )
+        else:
+            new_tasks[id].scheduled_deadline = raise_none(
+                current_task.scheduled_deadline
+            )
+        raise_none(new_tasks[id].scheduled_deadline)
     return new_tasks
+
+
+def raise_none(val):
+    if not val:
+        print(f"Missing value: {val}")
+    else:
+        return val
 
 
 def optimize_timing(
@@ -543,7 +528,7 @@ def optimize_timing(
         late_finish_obj_var,
         sum_task_slacks,
     ) = create_optimization_model_time_based(
-        task_blocks, availabilities, start_time, deadline
+        task_blocks, availabilities, start_time, deadline, set_objective=False
     )
     solver, status = solve_cpsat(
         model,
@@ -561,7 +546,9 @@ def optimize_timing(
         )
 
         # Consolidate tasks
-        consolidated_tasks = consolidate_tasks(tasks, new_tasks)
+        consolidated_tasks = consolidate_tasks(
+            original_tasks=tasks, block_tasks=new_tasks
+        )
         return consolidated_tasks
     else:
         raise ValueError("No solution found")
@@ -619,6 +606,14 @@ def create_optimization_model_time_based(
                     f"""Task "{task.description}" deadline {fmt_date(task.deadline)} is greater than project deadline {deadline}."""
                 )
             start_var = model.NewIntVar(lb, ub, f"{name}_start_{task.task_id}")
+            start_hint = (
+                task.scheduled_early_start
+                if name == "early"
+                else task.scheduled_late_start
+            )
+            # if start_hint:
+            #     hint = convert_datetime_to_model_hours(start_time, start_hint)
+            #     model.AddHint(start_var, hint)
             dur = int(task.duration.total_seconds() / 3600)
             interval_var = model.NewFixedSizeIntervalVar(
                 start_var, dur, f"{name}_interval_{task.task_id}"
@@ -672,7 +667,7 @@ def create_optimization_model_time_based(
     # No overlap constraint with availability constraints
     for var_group in [early_vars, late_vars]:
         model.AddNoOverlap(
-            [group.interval for group in var_group.values()] + busy_intervals[10:]
+            [group.interval for group in var_group.values()] + busy_intervals[30:]
         )
 
     # model.AddDecisionStrategy(
@@ -762,7 +757,6 @@ def solve_cpsat(
 
     # First minimize late finish
     model.Minimize(late_finish)
-
     cb = SolutionCallback(max_solutions, late_finish, sum_task_slacks)
     status = solver.Solve(model, solution_callback=cb)
 
@@ -791,11 +785,12 @@ def post_process_solution(
     """Set task times"""
     if copy:
         tasks = deepcopy(tasks)
+
     for task in tasks.all_tasks:
         task.scheduled_early_start = convert_model_hours_to_datetime(
             start_time, solver.Value(early_vars[task.task_id].start)
         )
-        task.scheduled_finish = task.scheduled_early_start + task.duration
+        task.scheduled_early_finish = task.scheduled_early_start + task.duration
         task.scheduled_late_start = convert_model_hours_to_datetime(
             start_time, solver.Value(late_vars[task.task_id].start)
         )

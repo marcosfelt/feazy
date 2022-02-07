@@ -6,6 +6,7 @@ import pytz
 import warnings
 import asyncio
 import os
+from typing import Optional
 
 
 load_dotenv()  # take environment variables from .env.
@@ -73,33 +74,35 @@ def download_notion_tasks(
             extracted_props["duration"] = timedelta(hours=dur)
 
         # Earliest Start
-        earliest_start = props["Earliest Start"]["date"]
-        if earliest_start:
-            d = tz.localize(datetime.strptime(earliest_start["start"], date_fmt))
-            if d < start_time:
-                d = start_time
-            extracted_props["earliest_start"] = d
-        else:
-            extracted_props["earliest_start"] = None
+        extracted_props["earliest_start"] = extract_date_property(
+            props, "Earliest Start", start_time, tz=tz
+        )
 
         # Deadline
-        deadline = props["Deadline"]["date"]
-        if deadline:
-            d = tz.localize(datetime.strptime(deadline["start"], date_fmt))
-            if d < start_time:
-                raise ValueError(
-                    f"""Deadline before start time for task "{extracted_props['description']}" ({get_page_url(extracted_props['task_id'])})"""
-                )
-            extracted_props["deadline"] = d
-        else:
-            extracted_props["deadline"] = None
+        extracted_props["deadline"] = extract_date_property(
+            props, "Deadline", start_time, tz=tz
+        )
 
         # Wait time
-        wait_time = props["Wait Time (days)"]
+        wait_time = props.get("Wait Time (days)")
         if wait_time:
             w = wait_time.get("number")
             w = w if w else 0
             extracted_props["wait_time"] = timedelta(days=w)
+
+        # Scheduled events
+        extracted_props["scheduled_early_start"] = extract_date_property(
+            props, "Scheduled Early Start", start_time, tz=tz
+        )
+        extracted_props["scheduled_late_start"] = extract_date_property(
+            props, "Scheduled Late Start", start_time, tz=tz
+        )
+        extracted_props["scheduled_early_finish"] = extract_date_property(
+            props, "Scheduled Early Finish", start_time, tz=tz
+        )
+        extracted_props["scheduled_deadline"] = extract_date_property(
+            props, "Scheduled Due Date", start_time, tz=tz
+        )
 
         # Create task
         if duration and to_do:
@@ -122,6 +125,28 @@ def download_notion_tasks(
     return tasks
 
 
+def extract_date_property(
+    props: dict,
+    property: str,
+    start_time: datetime,
+    tz=None,
+    date_format_str: Optional[str] = None,
+):
+    d = props.get(property)
+    d = d["date"] if d is not None else d
+    if tz is not None and d is not None:
+        date_format_str = "%Y-%m-%d" if date_format_str is None else date_format_str
+        d = tz.localize(datetime.strptime(d["start"], date_format_str))
+    if d:
+        if d < start_time:
+            raise ValueError(f"""Deadline before start time for task.""")
+
+    return d
+
+
+fmt_date = lambda d: d.strftime("%Y-%m-%d")
+
+
 async def _update_notion_tasks(tasks: TaskGraph):
     """"""
     logger = logging.getLogger(__name__)
@@ -130,7 +155,6 @@ async def _update_notion_tasks(tasks: TaskGraph):
     async_notion = connect_notion(logger, use_async=True)
 
     # Update notion tasks
-    fmt_date = lambda d: d.strftime("%Y-%m-%d")
     requests = []
     for task in tasks.all_tasks:
         if task.scheduled_early_start or task.scheduled_deadline:
@@ -142,7 +166,7 @@ async def _update_notion_tasks(tasks: TaskGraph):
                     "date": {"start": fmt_date(task.scheduled_late_start)}
                 },
                 "Scheduled Early Finish": {
-                    "date": {"start": fmt_date(task.scheduled_finish)}
+                    "date": {"start": fmt_date(task.scheduled_early_finish)}
                 },
                 "Scheduled Due Date": {
                     "date": {"start": fmt_date(task.scheduled_deadline)}
@@ -159,8 +183,31 @@ async def _update_notion_tasks(tasks: TaskGraph):
     await asyncio.gather(*requests)
 
 
-def update_notion_tasks(tasks: TaskGraph):
-    asyncio.run(_update_notion_tasks(tasks))
+def update_notion_tasks(tasks: TaskGraph, use_async=False):
+    if use_async:
+        asyncio.run(_update_notion_tasks(tasks))
+    else:
+        logger = logging.getLogger(__name__)
+
+        # Connect to notion
+        notion = connect_notion(logger, use_async=False)
+        logging.info(f"Updating {len(tasks._nodes)} tasks in Notion")
+        for task in tasks.all_tasks:
+            props = {
+                "Scheduled Early Start": {
+                    "date": {"start": fmt_date(task.scheduled_early_start)}
+                },
+                "Scheduled Late Start": {
+                    "date": {"start": fmt_date(task.scheduled_late_start)}
+                },
+                "Scheduled Early Finish": {
+                    "date": {"start": fmt_date(task.scheduled_early_finish)}
+                },
+                "Scheduled Due Date": {
+                    "date": {"start": fmt_date(task.scheduled_deadline)}
+                },
+            }
+            notion.pages.update(**{"page_id": task.task_id, "properties": props})
 
 
 def get_page_url(page_id: str):

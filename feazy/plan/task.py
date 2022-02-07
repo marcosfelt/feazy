@@ -44,6 +44,7 @@ class Task(Node):
         earliest_start: Optional[Union[date, datetime]] = None,
         deadline: Union[date, datetime] = None,
         wait_time: Optional[timedelta] = None,
+        **kwargs,
     ) -> None:
         if task_id is None:
             task_id = uuid4()
@@ -53,10 +54,10 @@ class Task(Node):
         self._earliest_start = earliest_start
         self._deadline = deadline
         self._wait_time = wait_time
-        self._scheduled_early_start: datetime = None
-        self._scheduled_finish: datetime = None
-        self._scheduled_late_start: datetime = None
-        self._scheduled_deadline: datetime = None
+        self._scheduled_early_start: datetime = kwargs.get("scheduled_early_start")
+        self._scheduled_early_finish: datetime = kwargs.get("scheduled_early_finish")
+        self._scheduled_late_start: datetime = kwargs.get("scheduled_late_start")
+        self._scheduled_deadline: datetime = kwargs.get("scheduled_deadline")
 
     @property
     def task_id(self):
@@ -107,13 +108,13 @@ class Task(Node):
             raise ValueError("Start time must be a date or datetime")
 
     @property
-    def scheduled_finish(self) -> Union[date, datetime, None]:
-        return self._scheduled_finish
+    def scheduled_early_finish(self) -> Union[date, datetime, None]:
+        return self._scheduled_early_finish
 
-    @scheduled_finish.setter
-    def scheduled_finish(self, val):
+    @scheduled_early_finish.setter
+    def scheduled_early_finish(self, val):
         if type(val) in [date, datetime]:
-            self._scheduled_finish = val
+            self._scheduled_early_finish = val
         else:
             raise ValueError("Scheduled finish must be a date or datetime")
 
