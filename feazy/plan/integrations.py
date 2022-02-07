@@ -33,7 +33,8 @@ def download_notion_tasks(
     # Connect to notion
     notion = connect_notion(logger)
 
-    # Get all uncompleted tasks
+    # Get all uncompleted task
+    logging.info("Querying notion for tasks")
     query = {"filter": {"property": "Complete", "checkbox": {"equals": False}}}
     results = notion.databases.query(database_id=database_id, **query).get("results")
     if results is None:
@@ -117,7 +118,7 @@ def download_notion_tasks(
             for predecessor in predecessors:
                 if predecessor in tasks._nodes:
                     tasks.add_dependency(predecessor, task_id)
-
+    logging.info(f"Retrieved {len(tasks._nodes)} from Notion")
     return tasks
 
 
@@ -154,8 +155,8 @@ async def _update_notion_tasks(tasks: TaskGraph):
             )
 
     # Send requests
+    logging.info(f"Updating {len(requests)} tasks in Notion")
     await asyncio.gather(*requests)
-    await asyncio.close()
 
 
 def update_notion_tasks(tasks: TaskGraph):

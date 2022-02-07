@@ -81,15 +81,16 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
     # Start time and deadline
     timezone = pytz.timezone("Europe/London")
     start_time = timezone.localize((Feb / 7 / 2022)[00:00])
-    deadline = start_time + 300 * days
+    deadline = timezone.localize((Jan / 1 / 2023)[00:00])
 
     # Read in tasks and dependencies
+    logging.debug("Downloading tasks from Notion")
     database_id = "89357b5cf7c749d6872a32636375b064"
     tasks = download_notion_tasks(database_id, start_time)
 
     # Work Times (9-5 M-F)
     work_times = {
-        i: [time(hour=9, minute=0, second=0), time(hour=17, minute=0, second=0)]
+        i: [time(hour=9, minute=0, second=0), time(hour=15, minute=0, second=0)]
         for i in range(6)
     }
 
@@ -121,9 +122,7 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
 
     # Update schedule in notion
     print(new_tasks)
-    logging.info("Updating tasks in Notion")
     update_notion_tasks(new_tasks)
-    logging.info("Saved scheduled tasks to Notion")
 
 
 if __name__ == "__main__":
