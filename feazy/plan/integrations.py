@@ -91,18 +91,18 @@ def download_notion_tasks(
             extracted_props["wait_time"] = timedelta(days=w)
 
         # Scheduled events
-        extracted_props["scheduled_early_start"] = extract_date_property(
-            props, "Scheduled Early Start", start_time, tz=tz
-        )
-        extracted_props["scheduled_late_start"] = extract_date_property(
-            props, "Scheduled Late Start", start_time, tz=tz
-        )
-        extracted_props["scheduled_early_finish"] = extract_date_property(
-            props, "Scheduled Early Finish", start_time, tz=tz
-        )
-        extracted_props["scheduled_deadline"] = extract_date_property(
-            props, "Scheduled Due Date", start_time, tz=tz
-        )
+        # extracted_props["scheduled_early_start"] = extract_date_property(
+        #     props, "Scheduled Early Start", start_time, tz=tz
+        # )
+        # extracted_props["scheduled_late_start"] = extract_date_property(
+        #     props, "Scheduled Late Start", start_time, tz=tz
+        # )
+        # extracted_props["scheduled_early_finish"] = extract_date_property(
+        #     props, "Scheduled Early Finish", start_time, tz=tz
+        # )
+        # extracted_props["scheduled_deadline"] = extract_date_property(
+        #     props, "Scheduled Due Date", start_time, tz=tz
+        # )
 
         # Create task
         if duration and to_do:

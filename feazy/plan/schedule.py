@@ -40,9 +40,7 @@ Once the exact start times are figured out, convert back to real time
 
 """
 import pdb
-from xxlimited import new
-
-from feazy.plan.utils import GraphSearch
+from feazy.plan.utils import Graph, GraphSearch
 from .task import Task, TaskGraph
 from gcsa.google_calendar import GoogleCalendar, Event
 from gcsa.event import Transparency
@@ -50,7 +48,7 @@ from beautiful_date import *
 from ortools.sat.python import cp_model
 from datetime import datetime, time, timedelta, date
 from typing import List, Union, Tuple, Optional, Dict
-from queue import LifoQueue
+from queue import LifoQueue, SimpleQueue
 import pytz
 import math
 import numpy as np
@@ -430,6 +428,15 @@ def consolidate_tasks(original_tasks: TaskGraph, block_tasks: TaskGraph) -> Task
 
     # Consolidate tasks
     for current_task in block_tasks.all_tasks:
+        if not all(
+            [
+                current_task.scheduled_early_start,
+                # current_task.scheduled_late_start,
+                current_task.scheduled_early_finish,
+                current_task.scheduled_deadline,
+            ]
+        ):
+            continue
         task_id = current_task.task_id
         split = task_id.split("_")
         if len(split) > 1:
@@ -447,19 +454,18 @@ def consolidate_tasks(original_tasks: TaskGraph, block_tasks: TaskGraph) -> Task
             new_tasks[id].scheduled_early_start = raise_none(
                 current_task.scheduled_early_start
             )
-        raise_none(new_tasks[id].scheduled_early_start)
 
         # Scheduled late start
-        if new_tasks[id].scheduled_late_start is not None:
-            if current_task.scheduled_late_start < new_tasks[id].scheduled_late_start:
-                new_tasks[id].scheduled_late_start = raise_none(
-                    current_task.scheduled_late_start
-                )
-        else:
-            new_tasks[id].scheduled_late_start = raise_none(
-                current_task.scheduled_late_start
-            )
-        raise_none(new_tasks[id].scheduled_late_start)
+        # if new_tasks[id].scheduled_late_start is not None:
+        #     if current_task.scheduled_late_start < new_tasks[id].scheduled_late_start:
+        #         new_tasks[id].scheduled_late_start = raise_none(
+        #             current_task.scheduled_late_start
+        #         )
+        # else:
+        #     new_tasks[id].scheduled_late_start = raise_none(
+        #         current_task.scheduled_late_start
+        #     )
+        # raise_none(new_tasks[id].scheduled_late_start)
 
         # Scheduled finish
         if new_tasks[id].scheduled_early_finish is not None:
@@ -521,28 +527,44 @@ def optimize_timing(
     )
 
     # Formulate and solve optimization problem
-    (
-        model,
-        early_vars,
-        late_vars,
-        late_finish_obj_var,
-        sum_task_slacks,
-    ) = create_optimization_model_time_based(
-        task_blocks, availabilities, start_time, deadline, set_objective=False
-    )
-    solver, status = solve_cpsat(
-        model,
-        early_vars=early_vars,
-        late_vars=late_vars,
-        max_solutions=max_solutions,
-        late_finish=late_finish_obj_var,
-        sum_task_slacks=sum_task_slacks,
-    )
+    for i, availability_index in enumerate([0]):
+        print(
+            f"############## Solving with availability index {availability_index} #####################"
+        )
+        (
+            model,
+            early_vars,
+            late_vars,
+            presences,
+            late_finish_obj_var,
+            tasks_completed_obj,
+            tasks_completed,
+        ) = create_optimization_model_time_based(
+            task_blocks,
+            availabilities,
+            start_time,
+            deadline,
+            set_objective=True,
+            start_availability_index=availability_index,
+        )
+        if i >= 1:
+            for var_group in [early_vars, late_vars]:
+                for var in var_group.values():
+                    model.AddHint(var.start, solver.Value(var.start))
+        solver, status = solve_cpsat(
+            model,
+            early_vars=early_vars,
+            late_vars=late_vars,
+            max_solutions=max_solutions,
+            late_finish=late_finish_obj_var,
+            task_completed_obj=tasks_completed_obj,
+            tasks_completed=tasks_completed,
+        )
 
     # Update tasks with scheduled start times and deadlines
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
         new_tasks = post_process_solution(
-            solver, task_blocks, start_time, early_vars, late_vars
+            solver, task_blocks, start_time, early_vars, late_vars, presences
         )
 
         # Consolidate tasks
@@ -571,6 +593,7 @@ def create_optimization_model_time_based(
     start_time: datetime,
     deadline: datetime,
     set_objective=False,
+    start_availability_index=0,
 ) -> Tuple[cp_model.CpModel, Dict, Dict]:
     """Create OR-tools optimization model. Time is in hours"""
     logger = logging.getLogger(__name__)
@@ -580,12 +603,20 @@ def create_optimization_model_time_based(
     # Create variables for early and late starts + intervals
     early_vars = {}
     late_vars = {}
+    presences: Dict[str, cp_model.IntVar] = {}
     project_deadline_hours = convert_datetime_to_model_hours(start_time, deadline)
+    first_availability = convert_datetime_to_model_hours(
+        start_time, availabilities[0][0]
+    )
     logger.debug(f"Project deadline hours: {project_deadline_hours}")
-    for task in tasks.all_tasks:
+    all_tasks = tasks.all_tasks
+    random_all_tasks = np.random.choice(all_tasks, len(all_tasks), replace=False)
+    for task in random_all_tasks:
+        presence = model.NewBoolVar(f"presence_{task.task_id}")
+        presences[task.task_id] = presence
         for name, var_group in {
             "early": early_vars,
-            "late": late_vars,
+            # "late": late_vars,
         }.items():
             lb = (
                 0
@@ -596,6 +627,7 @@ def create_optimization_model_time_based(
                 raise ValueError(
                     f"""Task "{task.description}" starts before start time."""
                 )
+            # lb = 0
             ub = (
                 project_deadline_hours
                 if task.deadline is None
@@ -605,49 +637,30 @@ def create_optimization_model_time_based(
                 raise ValueError(
                     f"""Task "{task.description}" deadline {fmt_date(task.deadline)} is greater than project deadline {deadline}."""
                 )
+            # ub = project_deadline_hours
             start_var = model.NewIntVar(lb, ub, f"{name}_start_{task.task_id}")
-            start_hint = (
-                task.scheduled_early_start
-                if name == "early"
-                else task.scheduled_late_start
-            )
-            # if start_hint:
-            #     hint = convert_datetime_to_model_hours(start_time, start_hint)
-            #     model.AddHint(start_var, hint)
+            # end_var = model.NewIntVar(lb, ub, f"{name}_end_{task.task_id}")
             dur = int(task.duration.total_seconds() / 3600)
-            interval_var = model.NewFixedSizeIntervalVar(
-                start_var, dur, f"{name}_interval_{task.task_id}"
+
+            interval_var = model.NewOptionalFixedSizeIntervalVar(
+                start_var, dur, presence, f"{name}_interval_{task.task_id}"
             )
+            # interval_var = model.NewIntervalVar(
+            #     start_var, dur, end_var, f"{name}_interval_{task.task_id}"
+            # )
             var_group[task.task_id] = task_type(
-                start=start_var, end=start_var + dur, interval=interval_var
+                start=start_var,
+                end=start_var + dur,
+                interval=interval_var,
             )
-
-    # Hint at initial values
-    # start_tasks = find_start_tasks(tasks)
-    # for start_task in start_tasks:
-    #     current_time = 0
-    #     for task in tasks.graph_search(start_task.task_id, GraphSearch.DFS):
-    #         # Move to earliest start if need to
-    #         lb = (
-    #             0
-    #             if task.earliest_start is None
-    #             else convert_datetime_to_model_hours(start_time, task.earliest_start)
-    #         )
-    #         if lb > current_time:
-    #             current_time = lb
-
-    #         # Add hint
-    #         model.AddHint(early_vars[task.task_id].start, current_time)
-    #         model.AddHint(late_vars[task.task_id].start, current_time + 72)
-
-    #         # Increment naively
-    #         dur = int(task.duration.total_seconds() / 3600)
-    #         wait_time = int(task.wait_time.total_seconds() / 3600)
-    #         current_time += dur + wait_time
 
     # Define non-available intervals
     availabilities.sort(key=lambda a: a[0], reverse=False)
-    busy_intervals = []
+    non_available_intervals = []
+    if availabilities[0][0] != start_time:
+        non_available_intervals.append(
+            model.NewFixedSizeIntervalVar(0, first_availability, "busy_interval_0")
+        )
     for i in range(1, len(availabilities)):
         start = convert_datetime_to_model_hours(start_time, availabilities[i - 1][1])
         end = convert_datetime_to_model_hours(start_time, availabilities[i][0])
@@ -660,15 +673,65 @@ def create_optimization_model_time_based(
                     f"{fmt_date(availabilities[i - 1][0])} does not come after {fmt_date(availabilities[i - 2][1])}"
                 )
         if size > 0:
-            busy_intervals.append(
+            non_available_intervals.append(
                 model.NewFixedSizeIntervalVar(start, size, f"busy_interval_{i}")
             )
 
-    # No overlap constraint with availability constraints
-    for var_group in [early_vars, late_vars]:
+    # No overlap constraint with tasks and availability constraints
+    for var_group in [
+        early_vars
+        # , late_vars
+    ]:
         model.AddNoOverlap(
-            [group.interval for group in var_group.values()] + busy_intervals[30:]
+            [group.interval for group in var_group.values()]
+            + non_available_intervals[start_availability_index:]
         )
+
+    # Only allow scheduling all tasks in a block
+    task_blocks = {}
+    for task in tasks.all_tasks:
+        task_id = task.task_id
+        split = task_id.split("_")
+        if len(split) > 1:
+            id = split[0]
+        else:
+            continue
+        block = task_blocks.get(id)
+        if block is None:
+            task_blocks[id] = [task_id]
+        else:
+            task_blocks[id].append(task_id)
+    for id, task_block in task_blocks.items():
+        model.Add(
+            presences[id] * len(task_block)
+            == sum(presences[block_id] for block_id in task_block)
+        )  # All or nothing
+
+    # Precedence constraint with wait times
+    for task in tasks.all_tasks:
+        for var_group in [
+            early_vars
+            # , late_vars
+        ]:
+            for succ in task.successors:
+                wait_time = int(task.wait_time.total_seconds() / 3600)
+                model.Add(
+                    var_group[task.task_id].end + wait_time
+                    <= var_group[succ.task_id].start
+                ).OnlyEnforceIf(presences[task.task_id])
+
+    # Slack constraint (early start must before late start)
+    # slacks = []
+    # for task in tasks.all_tasks:
+    #     slack = model.NewIntVar(0, project_deadline_hours, f"slack_{task.task_id}")
+    #     model.Add(
+    #         slack == late_vars[task.task_id].start - early_vars[task.task_id].start
+    #     ).OnlyEnforceIf(presences[task.task_id])
+    #     model.Add(slack == 0).OnlyEnforceIf(presences[task.task_id].Not())
+    #     slacks.append(slack)
+    #     # model.Add(
+    #     #     early_vars[task.task_id].start <= late_vars[task.task_id].start
+    #     # ).OnlyEnforceIf(presences[task.task_id])
 
     # model.AddDecisionStrategy(
     #     [t.start for t in early_vars.values()],
@@ -676,47 +739,122 @@ def create_optimization_model_time_based(
     #     cp_model.SELECT_MIN_VALUE,
     # )
 
-    # Precedence constraint with wait times
+    # Objectives: minimize late finish while maximizing number of tasks completed and slack
+    tasks_completed_obj = calculate_depth_weighted_completion_objective(
+        tasks, presences
+    )
+    # sum_task_slacks = sum(slacks)
+    # late_finish_obj_var = model.NewIntVar(0, project_deadline_hours, "late_finish")
+    # for task in tasks.all_tasks:
+    #     model.Add(late_vars[task.t    ask_id].end <= late_finish_obj_var).OnlyEnforceIf(
+    #         presences[task.task_id]
+    #     )
+    early_finish_obj_var = model.NewIntVar(0, project_deadline_hours, "early_finish")
     for task in tasks.all_tasks:
-        for var_group in [early_vars, late_vars]:
-            for succ in task.successors:
-                wait_time = int(task.wait_time.total_seconds() / 3600)
-                model.Add(
-                    var_group[task.task_id].end + wait_time
-                    <= var_group[succ.task_id].start
-                )
-
-    # Slack constraint (early start must before late start)
-    for task in tasks.all_tasks:
-        model.Add(early_vars[task.task_id].start <= late_vars[task.task_id].start)
-
-    # Objectives: minimize late finish while maximizing slack
-    sum_task_slacks = sum(
-        [
-            late_vars[task.task_id].start - early_vars[task.task_id].start
-            for task in tasks.all_tasks
-        ]
-    )
-    late_finish_obj_var = model.NewIntVar(
-        0, project_deadline_hours * len(early_vars), "late_finish"
-    )
-    model.AddMaxEquality(
-        late_finish_obj_var,
-        [late_vars[task.task_id].end for task in tasks.all_tasks],
-    )
+        model.Add(early_vars[task.task_id].end <= early_finish_obj_var).OnlyEnforceIf(
+            presences[task.task_id]
+        )
+    # inv_deadline = 1 / project_deadline_hours
+    # inv_max_slack = 1 / (project_deadline_hours * len(early_vars))
+    # inv_total_tasks = 1 / len(early_vars)
+    # print("inv_deadline:", inv_deadline)
+    # print("inv_max_slack:", inv_max_slack)
+    # print("inv_total_tasks:", inv_total_tasks)
     if set_objective:
-        model.Minimize(late_finish_obj_var - sum_task_slacks)
+        # model.Minimize(
+        #     inv_deadline * late_finish_obj_var
+        #     - 10 * inv_max_slack * sum_task_slacks
+        #     - 100 * inv_total_tasks * tasks_completed
+        # )
+        model.Minimize(early_finish_obj_var - tasks_completed_obj)
 
-    return model, early_vars, late_vars, late_finish_obj_var, sum_task_slacks
+    return (
+        model,
+        early_vars,
+        late_vars,
+        presences,
+        early_finish_obj_var,
+        tasks_completed_obj,
+        sum(presences[task.task_id] for task in tasks.all_tasks),
+    )
+
+
+def calculate_max_depth(tasks: TaskGraph, start_tasks: List[Task]):
+    max_depth = 0
+    for start_task in start_tasks:
+        depth = 0
+        for task in tasks.graph_search(start_task.task_id, GraphSearch.DFS):
+            depth += 1
+            if len(task.successors) == 0:
+                if depth > max_depth:
+                    max_depth = depth
+                break
+    return max_depth
+
+
+def calculate_depth_weighted_completion_objective(
+    tasks: TaskGraph, presences: Dict[str, cp_model.IntVar]
+):
+    "Calculate number of tasks completed inversely weighted by task depth"
+    start_tasks = find_start_tasks(tasks)
+    max_depth = calculate_max_depth(tasks, start_tasks)
+    tasks_completed = []
+    visited = {}
+    for start_task in start_tasks:
+        visit_list = SimpleQueue()
+
+        # Add root to queue to start
+        root = tasks[start_task.task_id]
+        if root:
+            visit_list.put(root)
+        else:
+            ValueError(f"{start_task.task_id} is not in the graph")
+
+        next_level = 0
+        current_level = 1
+        depth = 1
+        while not visit_list.empty():
+            task = visit_list.get(block=True)
+            if task.val not in visited:
+                # Add depth weighted task completion
+                coeff = int(max_depth / depth)
+                tasks_completed.append(coeff * presences[task.task_id])
+                # Update variables
+                visited[task.val] = task
+                for adjacent in task.successors:
+                    visit_list.put(adjacent)
+                next_level += len(task.successors)
+                current_level -= 1
+                if current_level <= 0:
+                    current_level = next_level
+                    depth += 1
+    # ensure all tasks were visited
+    for task in tasks.all_tasks:
+        if not task.task_id in visited:
+            raise ValueError(
+                f"{task.task_id} not incluced depth weighted completion calculation"
+            )
+    return sum(tasks_completed)
 
 
 class SolutionCallback(cp_model.CpSolverSolutionCallback):
-    def __init__(self, max_solutions: int, late_finish, sum_task_slacks):
+    def __init__(
+        self,
+        max_solutions: int,
+        late_finish: cp_model.IntVar,
+        # sum_task_slacks: cp_model.IntVar,
+        tasks_completed_obj: cp_model.IntVar,
+        tasks_completed: cp_model.IntVar,
+        total_tasks: int,
+    ):
         cp_model.CpSolverSolutionCallback.__init__(self)
         self._solution_count = 0
         self._solution_limit = max_solutions
         self._late_finish = late_finish
-        self._sum_task_slacks = sum_task_slacks
+        # self._sum_task_slacks = sum_task_slacks
+        self._tasks_completed_obj = tasks_completed_obj
+        self._tasks_completed = tasks_completed
+        self._total_tasks = total_tasks
 
     def OnSolutionCallback(self):
         return self.on_solution_callback()
@@ -725,9 +863,14 @@ class SolutionCallback(cp_model.CpSolverSolutionCallback):
         self._solution_count += 1
 
         late_finish = self.Value(self._late_finish)
-        sum_task_slacks = self.Value(self._sum_task_slacks)
+        # sum_task_slacks = self.Value(self._sum_task_slacks)
+        tasks_completed = self.Value(self._tasks_completed)
+        task_completed_obj = self.Value(self._tasks_completed_obj)
 
-        print(f"Late finish: {late_finish} | Task Slacks: {sum_task_slacks}")
+        print(
+            f"# Tasks Scheduled: {tasks_completed}/{self._total_tasks} (objective: {task_completed_obj}) | Late finish: {late_finish}"
+            # | Total Task Slacks: {sum_task_slacks}"
+        )
 
         if self._solution_count >= self._solution_limit:
             print(f"Stop search after {self._solution_count} solutions.")
@@ -741,11 +884,13 @@ class SolutionCallback(cp_model.CpSolverSolutionCallback):
 def solve_cpsat(
     model: cp_model.CpModel,
     late_finish: cp_model.IntVar,
-    sum_task_slacks: cp_model.IntVar,
+    tasks_completed: cp_model.IntVar,
+    # sum_task_slacks: cp_model.IntVar,
+    task_completed_obj: cp_model.IntVar,
     early_vars: Dict[str, task_type],
     late_vars: Dict[str, task_type],
     max_solutions=10,
-    num_workers=6,
+    num_workers=1,
     log_search_progress=True,
 ) -> None:
     """Solve optimization problem using CpSAT"""
@@ -754,21 +899,11 @@ def solve_cpsat(
     solver = cp_model.CpSolver()
     solver.parameters.log_search_progress = log_search_progress
     solver.parameters.num_search_workers = num_workers
+    # solver.parameters.cp_model_probing_level = 0
 
-    # First minimize late finish
-    model.Minimize(late_finish)
-    cb = SolutionCallback(max_solutions, late_finish, sum_task_slacks)
-    status = solver.Solve(model, solution_callback=cb)
-
-    # Hint/constraint values of variables based on first objective
-    for var_group in [early_vars, late_vars]:
-        for var in var_group.values():
-            model.AddHint(var.start, solver.Value(var.start))
-    model.Add(late_finish == round(solver.ObjectiveValue()))
-
-    # Then maximize task slacks
-    model.Maximize(sum_task_slacks)
-    cb = SolutionCallback(max_solutions, late_finish, sum_task_slacks)
+    cb = SolutionCallback(
+        max_solutions, late_finish, task_completed_obj, tasks_completed, len(early_vars)
+    )
     status = solver.Solve(model, solution_callback=cb)
 
     return solver, status
@@ -780,6 +915,7 @@ def post_process_solution(
     start_time: datetime,
     early_vars: Dict,
     late_vars: Dict,
+    presences: Dict,
     copy=True,
 ) -> List[Event]:
     """Set task times"""
@@ -787,14 +923,16 @@ def post_process_solution(
         tasks = deepcopy(tasks)
 
     for task in tasks.all_tasks:
-        task.scheduled_early_start = convert_model_hours_to_datetime(
-            start_time, solver.Value(early_vars[task.task_id].start)
-        )
-        task.scheduled_early_finish = task.scheduled_early_start + task.duration
-        task.scheduled_late_start = convert_model_hours_to_datetime(
-            start_time, solver.Value(late_vars[task.task_id].start)
-        )
-        task.scheduled_deadline = task.scheduled_late_start + task.duration
+        if solver.Value(presences[task.task_id]) > 0:
+            task.scheduled_early_start = convert_model_hours_to_datetime(
+                start_time, solver.Value(early_vars[task.task_id].start)
+            )
+            task.scheduled_early_finish = task.scheduled_early_start + task.duration
+            task.scheduled_deadline = task.scheduled_early_start + task.duration
+            # task.scheduled_late_start = convert_model_hours_to_datetime(
+            #     start_time, solver.Value(late_vars[task.task_id].start)
+            # )
+            # task.scheduled_deadline = task.scheduled_late_start + task.duration
     return tasks
 
 
@@ -923,7 +1061,7 @@ def optimize_schedule(
         start_time=start_time,
         deadline=deadline,
         block_duration=block_duration,
-        max_solutions=2,
+        max_solutions=50,
     )
 
     return scheduled_tasks

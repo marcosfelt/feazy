@@ -81,7 +81,7 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
     # Start time and deadline
     timezone = pytz.timezone("Europe/London")
     start_time = timezone.localize((Feb / 7 / 2022)[00:00])
-    deadline = timezone.localize((Jan / 1 / 2023)[00:00])
+    deadline = timezone.localize((Jan / 31 / 2023)[00:00])
 
     # Read in tasks and dependencies
     logging.debug("Downloading tasks from Notion")
@@ -98,7 +98,7 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
     try:
         calendar = GoogleCalendar(base_calendar)
     except RefreshError:
-        p = Path("~/.credentials/token.pickle")
+        p = Path.home() / ".credentials" / "token.pickle"
         os.remove(p)
         calendar = GoogleCalendar()
 
@@ -117,12 +117,12 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
             # Birthdays
             "addressbook#contacts@group.v.calendar.google.com",
         ],
-        block_duration=timedelta(hours=2),
+        block_duration=timedelta(hours=1),
     )
 
     # Update schedule in notion
     print(new_tasks)
-    update_notion_tasks(new_tasks, use_async=True)
+    # update_notion_tasks(new_tasks, use_async=True)
 
 
 if __name__ == "__main__":

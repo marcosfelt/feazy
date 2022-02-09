@@ -94,7 +94,7 @@ class Task(Node):
         if type(val) in [date, datetime]:
             self._scheduled_early_start = val
         else:
-            raise ValueError("Start time must be a date or datetime")
+            raise ValueError(f"Start time ({val}) must be a date or datetime")
 
     @property
     def scheduled_late_start(self) -> Union[date, datetime, None]:
@@ -105,7 +105,7 @@ class Task(Node):
         if type(val) in [date, datetime]:
             self._scheduled_late_start = val
         else:
-            raise ValueError("Start time must be a date or datetime")
+            raise ValueError(f"Start time ({val}) must be a date or datetime")
 
     @property
     def scheduled_early_finish(self) -> Union[date, datetime, None]:
@@ -194,6 +194,7 @@ class TaskGraph(Graph):
             for t in self.all_tasks
             if t.scheduled_early_start and t.scheduled_deadline
         ]
+
         scheduled_tasks.sort(key=lambda t: t.scheduled_deadline, reverse=False)
         end_time: datetime = scheduled_tasks[-1].scheduled_deadline
         scheduled_tasks.sort(key=lambda t: t.scheduled_early_start, reverse=False)
@@ -219,6 +220,10 @@ class TaskGraph(Graph):
             repr += "|" * dur
             dur
             repr += "\n"
+        repr += "\nNot Scheduled\n"
+        for task in self.all_tasks:
+            if not task.scheduled_early_start and not task.scheduled_deadline:
+                repr += task.description + "\n"
         return repr
 
     @property
