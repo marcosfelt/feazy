@@ -53,9 +53,12 @@ def download_notion_tasks(
     tasks = TaskGraph()
     date_fmt = "%Y-%m-%d"
     tz = pytz.timezone(timezone)
+    previous_ids = []
     for result in results:
         extracted_props = {}
         extracted_props["task_id"] = result["id"]
+        assert not extracted_props["task_id"] in previous_ids
+        previous_ids.append(extracted_props["task_id"])
         props = result["properties"]
 
         # Assert that it is not complete
@@ -129,6 +132,13 @@ def download_notion_tasks(
             for predecessor in predecessors:
                 if predecessor in tasks._nodes:
                     tasks.add_dependency(predecessor, task_id)
+
+    # Check for cyclic dependencies
+    if tasks.is_cyclic():
+        cycles = "".join(f"{cycle} | " for cycle in tasks._cycles)
+        print(tasks)
+        raise ValueError(f"The following tasks are in cycles: {cycles}")
+
     logging.info(f"Retrieved {len(tasks._nodes)} from Notion")
     return tasks
 
@@ -173,7 +183,9 @@ async def _update_notion_tasks(tasks: TaskGraph):
                     else None
                 },
                 "Scheduled Late Start": {
-                    "date": None,
+                    "date": {"start": fmt_date(task.scheduled_late_start)}
+                    if task.scheduled_late_start
+                    else None
                 },
                 "Scheduled Early Finish": {
                     "date": {"start": fmt_date(task.scheduled_early_finish)}

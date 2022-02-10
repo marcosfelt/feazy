@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import List, Tuple, Dict
 from queue import LifoQueue, SimpleQueue
+import logging
 
 
 class Node:
@@ -9,8 +10,10 @@ class Node:
     def __init__(self, val: str) -> None:
         self.val = val
         self._adjacents = []
+        self._logger = logging.getLogger(__name__)
 
     def add_adjacent(self, node: Node) -> None:
+
         self._adjacents.append(node)
 
     def remove_adjacent(self, node: Node) -> None:
@@ -24,6 +27,7 @@ class Node:
 
     @property
     def adjacents(self) -> List[Node]:
+        self._logger.debug("Returned adjacent {")
         return self._adjacents
 
     def __repr__(self) -> str:
@@ -53,6 +57,7 @@ class Graph:
         self._nodes: Dict[str, Node]
         self._nodes = {}
         self.edge_direction = edge_direction
+        self._cycles = []
 
     def create_node(self, val: str) -> Node:
         """Add a node to the graph"""
@@ -130,6 +135,39 @@ class Graph:
     @property
     def nodes(self) -> List[Node]:
         return [n for n in self._nodes.values()]
+
+    def _is_cyclic(self, v, visited, recStack):
+
+        # Mark current node as visited and
+        # adds to recursion stack
+        visited[v] = True
+        recStack[v] = True
+
+        # Recur for all neighbours
+        # if any neighbour is visited and in
+        # recStack then graph is cyclic
+        for neighbour in self._nodes[v].adjacents:
+            if visited[neighbour.val] == False:
+                if self._is_cyclic(neighbour.val, visited, recStack) == True:
+                    self._cycles.append(neighbour.val)
+                    return True
+            elif recStack[neighbour.val] == True:
+                return True
+
+        # The node needs to be poped from
+        # recursion stack before function ends
+        recStack[v] = False
+        return False
+
+    # Returns true if graph is cyclic else false
+    def is_cyclic(self):
+        visited = {n: False for n in self._nodes}
+        recStack = {n: False for n in self._nodes}
+        for node in self._nodes:
+            if visited[node] == False:
+                if self._is_cyclic(node, visited, recStack) == True:
+                    return True
+        return False
 
     def __repr__(self) -> str:
         return (

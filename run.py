@@ -81,7 +81,7 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
     # Start time and deadline
     timezone = pytz.timezone("Europe/London")
     start_time = timezone.localize((Feb / 14 / 2022)[00:00])
-    deadline = timezone.localize((Mar / 31 / 2023)[00:00])
+    deadline = timezone.localize((Apr / 30 / 2023)[00:00])
 
     # Read in tasks and dependencies
     logging.debug("Downloading tasks from Notion")

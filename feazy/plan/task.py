@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from uuid import uuid4
 from .utils import Node, Graph, GraphDirection
 from typing import List, Optional, Tuple, Union
@@ -154,6 +155,8 @@ class TaskGraph(Graph):
             for task in tasks:
                 self._nodes[task.val] = task
 
+        self._logger = logging.getLogger(__name__)
+
     def add_task(self, task: Task):
         if task.val in self._nodes:
             raise KeyError(f"Task with f{task.val} already exists in graph")
@@ -171,7 +174,9 @@ class TaskGraph(Graph):
         self, source_task_id: str, successor_task_id: str
     ) -> Tuple[Node, Node]:
         if source_task_id == successor_task_id:
-            raise ValueError("A task cannot be a predecessor of itself.")
+            raise ValueError(
+                f"Task {self[source_task_id]} cannot be a predecessor of itself."
+            )
         source_node = self.get_node(source_task_id)
         destination_node = self.get_node(successor_task_id)
 
@@ -194,35 +199,35 @@ class TaskGraph(Graph):
             for t in self.all_tasks
             if t.scheduled_early_start and t.scheduled_deadline
         ]
-
-        scheduled_tasks.sort(key=lambda t: t.scheduled_deadline, reverse=False)
-        end_time: datetime = scheduled_tasks[-1].scheduled_deadline
-        scheduled_tasks.sort(key=lambda t: t.scheduled_early_start, reverse=False)
-        start_time: datetime = scheduled_tasks[0].scheduled_early_start
-        d = int((end_time - start_time).total_seconds() / (3600 * 24) / 50)
-        d = 1 if d == 0 else d
-        for task in scheduled_tasks:
-            values = [task.task_id, task.description, task.scheduled_early_start]
-            repr += "".join(
-                [
-                    str(v)[: len(h)].ljust(len(h), " ") + "\t"
-                    for h, v in zip(headers, values)
-                ]
-            )
-            offset = int(
-                (task.scheduled_early_start - start_time).total_seconds()
-                / (3600 * 24)
-                / d
-            )  # in days
-            repr += " " * offset
-            repr += "|"
-            dur = int(task.duration.total_seconds() / (3600 * 24) / d)  # In days
-            repr += "|" * dur
-            dur
-            repr += "\n"
-        repr += "\nNot Scheduled\n"
-        headers = ["Task ID", "Task Description" + " " * 20]
-        repr += "".join([f"{h}\t" for h in headers]) + "\n"
+        if len(scheduled_tasks) > 0:
+            scheduled_tasks.sort(key=lambda t: t.scheduled_deadline, reverse=False)
+            end_time: datetime = scheduled_tasks[-1].scheduled_deadline
+            scheduled_tasks.sort(key=lambda t: t.scheduled_early_start, reverse=False)
+            start_time: datetime = scheduled_tasks[0].scheduled_early_start
+            d = int((end_time - start_time).total_seconds() / (3600 * 24) / 50)
+            d = 1 if d == 0 else d
+            for task in scheduled_tasks:
+                values = [task.task_id, task.description, task.scheduled_early_start]
+                repr += "".join(
+                    [
+                        str(v)[: len(h)].ljust(len(h), " ") + "\t"
+                        for h, v in zip(headers, values)
+                    ]
+                )
+                offset = int(
+                    (task.scheduled_early_start - start_time).total_seconds()
+                    / (3600 * 24)
+                    / d
+                )  # in days
+                repr += " " * offset
+                repr += "|"
+                dur = int(task.duration.total_seconds() / (3600 * 24) / d)  # In days
+                repr += "|" * dur
+                dur
+                repr += "\n"
+            repr += "\nNot Scheduled\n"
+            headers = ["Task ID", "Task Description" + " " * 20]
+            repr += "".join([f"{h}\t" for h in headers]) + "\n"
         for task in self.all_tasks:
             if not task.scheduled_early_start and not task.scheduled_deadline:
                 values = [task.task_id, task.description]

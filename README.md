@@ -37,6 +37,8 @@ What worked:
 * **Solving the multiobjective problem in two stages**: I tried several different objective formulations and found that it was best to first maximize the number of the active tasks before minimizing the total project time. See this [blog post](https://www.xiang.dev/cp-sat/#multiobjective-optimization) for a code example.
 * **Syncing tasks with Notion**: The Notion API is well designed and its use in python is improved by [notion-py-sdk](https://github.com/ramnes/notion-sdk-py). I used the asynchronous version of the SDK for bulk uploading task schedules to Notion because it seemed faster.
 
+
 What didn't work:
 * **Pulling availability from Google calendar**: I tried creating availability based on my google calendar but kept running into problems with the algorithm I used to turn events into availability. I haven't completely given up on this because I believe my issues with this algorithm were mixed up with a bunch of other issues I later solved.
-* **Maximizing slack**: I tried to use ideas from the [critical path method](https://en.wikipedia.org/wiki/Critical_path_method) where each task has an associated early start and late start. This was causing all types of problems, but again, I haven't given up on the idea.
+
+* ~~**Maximizing slack**: I tried to use ideas from the [critical path method](https://en.wikipedia.org/wiki/Critical_path_method) where each task has an associated early start and late start. This was causing all types of problems, but again, I haven't given up on the idea.~~
