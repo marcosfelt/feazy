@@ -221,9 +221,20 @@ class TaskGraph(Graph):
             dur
             repr += "\n"
         repr += "\nNot Scheduled\n"
+        headers = ["Task ID", "Task Description" + " " * 20]
+        repr += "".join([f"{h}\t" for h in headers]) + "\n"
         for task in self.all_tasks:
             if not task.scheduled_early_start and not task.scheduled_deadline:
-                repr += task.description + "\n"
+                values = [task.task_id, task.description]
+                repr += (
+                    "".join(
+                        [
+                            str(v)[: len(h)].ljust(len(h), " ") + "\t"
+                            for h, v in zip(headers, values)
+                        ]
+                    )
+                    + "\n"
+                )
         return repr
 
     @property

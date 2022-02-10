@@ -374,51 +374,32 @@ def breakdown_tasks(tasks: TaskGraph, block_duration: timedelta) -> TaskGraph:
         tasks
     )  # New tasks graph for inserting breaks and broken down blocks
 
-    # Find starting tasks
-    start_tasks = find_start_tasks(tasks)
-
     # Breakdown tasks
-    visit_queue = LifoQueue()  # LIFO queue (stack) for doing depth first search
-    visited_tasks = []
-    for start_task in start_tasks:
-        for adj in start_task.adjacents:
-            visit_queue.put(adj)
+    for current_task in tasks.all_tasks:
+        # Break up task if necessary
+        if current_task.duration > block_duration:
+            n_blocks = int(math.ceil(current_task.duration / block_duration))
+            new_tasks[current_task.task_id].duration = block_duration
+            new_tasks[current_task.task_id].description += f" (Block 1/{n_blocks})"
+            last_block = new_tasks[current_task.task_id]
+            for b in range(n_blocks - 1):
+                new_block = Task(
+                    task_id=current_task.task_id + f"_{b+2}",
+                    duration=block_duration,
+                    description=current_task.description + f" (Block {b+2}/{n_blocks})",
+                )
+                new_tasks.add_task(new_block)
+                new_tasks.add_dependency(last_block.task_id, new_block.task_id)
+                last_block = new_block
+            for adj in current_task.adjacents:
+                new_tasks.remove_dependency(current_task.task_id, adj.task_id)
+                new_tasks.add_dependency(last_block.task_id, adj.task_id)
 
-        while not visit_queue.empty():
-            current_task = visit_queue.get(block=True)
-            if current_task not in visited_tasks:
-                # Break up task if necessary
-                if current_task.duration > block_duration:
-                    n_blocks = int(math.ceil(current_task.duration / block_duration))
-                    new_tasks[current_task.task_id].duration = block_duration
-                    new_tasks[
-                        current_task.task_id
-                    ].description += f" (Block 1/{n_blocks})"
-                    last_block = new_tasks[current_task.task_id]
-                    for b in range(n_blocks - 1):
-                        new_block = Task(
-                            task_id=current_task.task_id + f"_{b+2}",
-                            duration=block_duration,
-                            description=current_task.description
-                            + f" (Block {b+2}/{n_blocks})",
-                        )
-                        new_tasks.add_task(new_block)
-                        new_tasks.add_dependency(last_block.task_id, new_block.task_id)
-                        last_block = new_block
-                    for adj in current_task.adjacents:
-                        new_tasks.remove_dependency(current_task.task_id, adj.task_id)
-                        new_tasks.add_dependency(last_block.task_id, adj.task_id)
-                else:
-                    last_block = new_tasks[current_task.task_id]
-
-                # Add new adjacents
-                for adj in current_task.adjacents:
-                    if adj not in visited_tasks:
-                        visit_queue.put(adj, block=True)
-
-                # Mark current node as visited
-                visited_tasks.append(current_task)
-
+    for task in new_tasks.all_tasks:
+        if task.duration > block_duration:
+            raise ValueError(
+                f"""Duration of task "{task.description}" ({timedelta.total_seconds()/3600} hr) is greater than block duration ({block_duration.total_seconds()/3600}hr) """
+            )
     return new_tasks
 
 
@@ -510,6 +491,9 @@ def optimize_timing(
     start_time: Optional[datetime] = None,
     deadline: Optional[datetime] = None,
     max_solutions: Optional[int] = 10,
+    num_retries: Optional[int] = 3,
+    timeout: Optional[float] = 60.0,
+    separate_objectives=False,
 ) -> TaskGraph:
     """Optimize timing using CpSAT solver"""
     logger = logging.getLogger(__name__)
@@ -527,53 +511,50 @@ def optimize_timing(
     )
 
     # Formulate and solve optimization problem
-    for i, availability_index in enumerate([0]):
-        print(
-            f"############## Solving with availability index {availability_index} #####################"
-        )
-        (
-            model,
-            early_vars,
-            late_vars,
-            presences,
-            late_finish_obj_var,
-            tasks_completed_obj,
-            tasks_completed,
-        ) = create_optimization_model_time_based(
-            task_blocks,
-            availabilities,
-            start_time,
-            deadline,
-            set_objective=True,
-            start_availability_index=availability_index,
-        )
-        if i >= 1:
-            for var_group in [early_vars, late_vars]:
-                for var in var_group.values():
-                    model.AddHint(var.start, solver.Value(var.start))
+    (
+        model,
+        early_vars,
+        presences,
+        late_finish_obj_var,
+        tasks_completed_obj,
+        tasks_completed,
+    ) = create_optimization_model_time_based(
+        task_blocks,
+        availabilities,
+        start_time,
+        deadline,
+        set_objective=not separate_objectives,
+    )
+    for _ in range(num_retries):
         solver, status = solve_cpsat(
             model,
             early_vars=early_vars,
-            late_vars=late_vars,
             max_solutions=max_solutions,
-            late_finish=late_finish_obj_var,
+            early_finish=late_finish_obj_var,
             task_completed_obj=tasks_completed_obj,
             tasks_completed=tasks_completed,
+            set_objective=separate_objectives,
+            timeout=timeout,
         )
 
-    # Update tasks with scheduled start times and deadlines
-    if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-        new_tasks = post_process_solution(
-            solver, task_blocks, start_time, early_vars, late_vars, presences
-        )
+        # Update tasks with scheduled start times and deadlines
+        if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+            new_tasks = post_process_solution(
+                solver=solver,
+                tasks=task_blocks,
+                start_time=start_time,
+                early_vars=early_vars,
+                presences=presences,
+            )
 
-        # Consolidate tasks
-        consolidated_tasks = consolidate_tasks(
-            original_tasks=tasks, block_tasks=new_tasks
-        )
-        return consolidated_tasks
-    else:
-        raise ValueError("No solution found")
+            # Consolidate tasks
+            consolidated_tasks = consolidate_tasks(
+                original_tasks=tasks, block_tasks=new_tasks
+            )
+            return consolidated_tasks
+        else:
+            continue
+    raise ValueError("No solution found")
 
 
 def convert_datetime_to_model_hours(start_time: datetime, time: datetime) -> int:
@@ -593,7 +574,6 @@ def create_optimization_model_time_based(
     start_time: datetime,
     deadline: datetime,
     set_objective=False,
-    start_availability_index=0,
 ) -> Tuple[cp_model.CpModel, Dict, Dict]:
     """Create OR-tools optimization model. Time is in hours"""
     logger = logging.getLogger(__name__)
@@ -602,7 +582,6 @@ def create_optimization_model_time_based(
 
     # Create variables for early and late starts + intervals
     early_vars = {}
-    late_vars = {}
     presences: Dict[str, cp_model.IntVar] = {}
     project_deadline_hours = convert_datetime_to_model_hours(start_time, deadline)
     first_availability = convert_datetime_to_model_hours(
@@ -639,15 +618,12 @@ def create_optimization_model_time_based(
                 )
             # ub = project_deadline_hours
             start_var = model.NewIntVar(lb, ub, f"{name}_start_{task.task_id}")
-            # end_var = model.NewIntVar(lb, ub, f"{name}_end_{task.task_id}")
             dur = int(task.duration.total_seconds() / 3600)
 
             interval_var = model.NewOptionalFixedSizeIntervalVar(
                 start_var, dur, presence, f"{name}_interval_{task.task_id}"
             )
-            # interval_var = model.NewIntervalVar(
-            #     start_var, dur, end_var, f"{name}_interval_{task.task_id}"
-            # )
+
             var_group[task.task_id] = task_type(
                 start=start_var,
                 end=start_var + dur,
@@ -683,8 +659,7 @@ def create_optimization_model_time_based(
         # , late_vars
     ]:
         model.AddNoOverlap(
-            [group.interval for group in var_group.values()]
-            + non_available_intervals[start_availability_index:]
+            [group.interval for group in var_group.values()] + non_available_intervals
         )
 
     # Only allow scheduling all tasks in a block
@@ -720,62 +695,27 @@ def create_optimization_model_time_based(
                     <= var_group[succ.task_id].start
                 ).OnlyEnforceIf(presences[task.task_id])
 
-    # Slack constraint (early start must before late start)
-    # slacks = []
-    # for task in tasks.all_tasks:
-    #     slack = model.NewIntVar(0, project_deadline_hours, f"slack_{task.task_id}")
-    #     model.Add(
-    #         slack == late_vars[task.task_id].start - early_vars[task.task_id].start
-    #     ).OnlyEnforceIf(presences[task.task_id])
-    #     model.Add(slack == 0).OnlyEnforceIf(presences[task.task_id].Not())
-    #     slacks.append(slack)
-    #     # model.Add(
-    #     #     early_vars[task.task_id].start <= late_vars[task.task_id].start
-    #     # ).OnlyEnforceIf(presences[task.task_id])
-
-    # model.AddDecisionStrategy(
-    #     [t.start for t in early_vars.values()],
-    #     cp_model.CHOOSE_FIRST,
-    #     cp_model.SELECT_MIN_VALUE,
-    # )
-
     # Objectives: minimize late finish while maximizing number of tasks completed and slack
     tasks_completed_obj = calculate_depth_weighted_completion_objective(
         tasks, presences
     )
-    # sum_task_slacks = sum(slacks)
-    # late_finish_obj_var = model.NewIntVar(0, project_deadline_hours, "late_finish")
-    # for task in tasks.all_tasks:
-    #     model.Add(late_vars[task.t    ask_id].end <= late_finish_obj_var).OnlyEnforceIf(
-    #         presences[task.task_id]
-    #     )
+    task_completed = sum(presences[task.task_id] for task in tasks.all_tasks)
     early_finish_obj_var = model.NewIntVar(0, project_deadline_hours, "early_finish")
     for task in tasks.all_tasks:
         model.Add(early_vars[task.task_id].end <= early_finish_obj_var).OnlyEnforceIf(
             presences[task.task_id]
         )
-    # inv_deadline = 1 / project_deadline_hours
-    # inv_max_slack = 1 / (project_deadline_hours * len(early_vars))
-    # inv_total_tasks = 1 / len(early_vars)
-    # print("inv_deadline:", inv_deadline)
-    # print("inv_max_slack:", inv_max_slack)
-    # print("inv_total_tasks:", inv_total_tasks)
     if set_objective:
-        # model.Minimize(
-        #     inv_deadline * late_finish_obj_var
-        #     - 10 * inv_max_slack * sum_task_slacks
-        #     - 100 * inv_total_tasks * tasks_completed
-        # )
         model.Minimize(early_finish_obj_var - tasks_completed_obj)
 
     return (
         model,
         early_vars,
-        late_vars,
+        # late_vars,
         presences,
         early_finish_obj_var,
         tasks_completed_obj,
-        sum(presences[task.task_id] for task in tasks.all_tasks),
+        task_completed,
     )
 
 
@@ -880,18 +820,21 @@ class SolutionCallback(cp_model.CpSolverSolutionCallback):
     def solution_count(self):
         return self._solution_count
 
+    def reset(self):
+        self._solution_count = 0
+
 
 def solve_cpsat(
     model: cp_model.CpModel,
-    late_finish: cp_model.IntVar,
+    early_finish: cp_model.IntVar,
     tasks_completed: cp_model.IntVar,
-    # sum_task_slacks: cp_model.IntVar,
     task_completed_obj: cp_model.IntVar,
     early_vars: Dict[str, task_type],
-    late_vars: Dict[str, task_type],
     max_solutions=10,
     num_workers=1,
     log_search_progress=True,
+    set_objective=False,
+    timeout=60,
 ) -> None:
     """Solve optimization problem using CpSAT"""
     logger = logging.getLogger(__name__)
@@ -899,12 +842,35 @@ def solve_cpsat(
     solver = cp_model.CpSolver()
     solver.parameters.log_search_progress = log_search_progress
     solver.parameters.num_search_workers = num_workers
+    solver.parameters.max_time_in_seconds = timeout
     # solver.parameters.cp_model_probing_level = 0
 
-    cb = SolutionCallback(
-        max_solutions, late_finish, task_completed_obj, tasks_completed, len(early_vars)
-    )
-    status = solver.Solve(model, solution_callback=cb)
+    if set_objective:
+        model.Maximize(task_completed_obj)
+        cb = SolutionCallback(
+            max_solutions,
+            early_finish,
+            task_completed_obj,
+            tasks_completed,
+            len(early_vars),
+        )
+        status = solver.Solve(model, solution_callback=cb)
+
+        for var in early_vars.values():
+            model.AddHint(var.start, solver.Value(var.start))
+        model.Add(tasks_completed >= solver.Value(tasks_completed))
+        model.Minimize(early_finish)
+        cb.reset()
+        status = solver.Solve(model, solution_callback=cb)
+    else:
+        cb = SolutionCallback(
+            max_solutions,
+            early_finish,
+            task_completed_obj,
+            tasks_completed,
+            len(early_vars),
+        )
+        status = solver.Solve(model, solution_callback=cb)
 
     return solver, status
 
@@ -914,7 +880,6 @@ def post_process_solution(
     tasks: TaskGraph,
     start_time: datetime,
     early_vars: Dict,
-    late_vars: Dict,
     presences: Dict,
     copy=True,
 ) -> List[Event]:
@@ -965,11 +930,8 @@ def optimize_schedule(
     work_times: Dict[int, Tuple[time, time]],
     start_time: datetime,
     deadline: datetime,
-    base_calendar: GoogleCalendar,
     work_timezone: str = "Europe/London",
     block_duration: Optional[timedelta] = None,
-    exclude_calendar_ids: Optional[List[str]] = None,
-    transparent_as_free: bool = True,
 ) -> None:
     """
 
@@ -979,32 +941,6 @@ def optimize_schedule(
         Events that do not block time on the calendar are marked as available.
     """
     logger = logging.getLogger(__name__)
-
-    # # Get availability
-    # exclude_calendar_ids = (
-    #     exclude_calendar_ids if exclude_calendar_ids is not None else []
-    # )
-    # exclude_calendar_ids = list(set(exclude_calendar_ids))
-    # calendars = get_calendars(base_calendar, exclude=exclude_calendar_ids)
-    # availabilities = get_availability(
-    #     calendars,
-    #     start_time,
-    #     deadline,
-    #     transparent_as_free=transparent_as_free,
-    #     split_across_days=False,
-    # )
-    # total_available_time = sum(
-    #     [(a[1] - a[0]).total_seconds() / 3600 for a in availabilities]
-    # )
-    # logger.info(
-    #     f"Total available time before filtering: {total_available_time:.01f} hours"
-    # )
-    # # for a in availabilities:
-    # #     print(fmt_date(a[0]), "-", fmt_date(a[1]))
-
-    # # Filter availabilities to work times
-    # filtered_availabilities = filter_availabilities(availabilities, work_times)
-    # filtered_availabilities.sort(key=lambda d: d[0], reverse=False)
 
     n_days = (deadline - start_time).days
     filtered_availabilities = []
@@ -1062,6 +998,9 @@ def optimize_schedule(
         deadline=deadline,
         block_duration=block_duration,
         max_solutions=50,
+        timeout=400,
+        num_retries=1,
+        separate_objectives=True,
     )
 
     return scheduled_tasks

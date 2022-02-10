@@ -1,3 +1,4 @@
+import pdb
 from .task import Task, TaskGraph
 from notion_client import Client, AsyncClient
 from dotenv import load_dotenv
@@ -77,6 +78,13 @@ def download_notion_tasks(
         extracted_props["earliest_start"] = extract_date_property(
             props, "Earliest Start", start_time, tz=tz
         )
+        # if extracted_props["earliest_start"] is None:
+        #     from pprint import pprint
+
+        #     pprint(props)
+        #     import pdb
+
+        #     pdb.set_trace()
 
         # Deadline
         extracted_props["deadline"] = extract_date_property(
@@ -139,7 +147,7 @@ def extract_date_property(
         d = tz.localize(datetime.strptime(d["start"], date_format_str))
     if d:
         if d < start_time:
-            raise ValueError(f"""Deadline before start time for task.""")
+            raise ValueError(f"""Deadline for task before start time for project.""")
 
     return d
 
@@ -161,15 +169,21 @@ async def _update_notion_tasks(tasks: TaskGraph):
             props = {
                 "Scheduled Early Start": {
                     "date": {"start": fmt_date(task.scheduled_early_start)}
+                    if task.scheduled_early_start
+                    else None
                 },
                 "Scheduled Late Start": {
-                    "date": {"start": fmt_date(task.scheduled_late_start)}
+                    "date": None,
                 },
                 "Scheduled Early Finish": {
                     "date": {"start": fmt_date(task.scheduled_early_finish)}
+                    if task.scheduled_early_finish
+                    else None
                 },
                 "Scheduled Due Date": {
                     "date": {"start": fmt_date(task.scheduled_deadline)}
+                    if task.scheduled_deadline
+                    else None
                 },
             }
             requests.append(

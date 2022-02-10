@@ -45,7 +45,7 @@ def test_optimization(main_calendar="kobi.c.f@gmail.com"):
 
     # Work Times (9-5 M-F)
     work_times = {
-        i: [time(hour=9, minute=0, second=0), time(hour=17, minute=0, second=0)]
+        i: [time(hour=9, minute=0, second=0), time(hour=13, minute=0, second=0)]
         for i in range(6)
     }
 
@@ -80,8 +80,8 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
 
     # Start time and deadline
     timezone = pytz.timezone("Europe/London")
-    start_time = timezone.localize((Feb / 7 / 2022)[00:00])
-    deadline = timezone.localize((Jan / 31 / 2023)[00:00])
+    start_time = timezone.localize((Feb / 14 / 2022)[00:00])
+    deadline = timezone.localize((Mar / 31 / 2023)[00:00])
 
     # Read in tasks and dependencies
     logging.debug("Downloading tasks from Notion")
@@ -94,35 +94,18 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
         for i in range(6)
     }
 
-    # Google calendar for availabilities
-    try:
-        calendar = GoogleCalendar(base_calendar)
-    except RefreshError:
-        p = Path.home() / ".credentials" / "token.pickle"
-        os.remove(p)
-        calendar = GoogleCalendar()
-
     # Optimize scheudle
     new_tasks = optimize_schedule(
         tasks,
         work_times=work_times,
         start_time=start_time,
         deadline=deadline,
-        base_calendar=calendar,
-        exclude_calendar_ids=[
-            # Weather calendar
-            "jc1o00r4ve65t348l20l2q0090ken3q7@import.calendar.google.com",
-            # chandler's calendar
-            "jcgsville@gmail.com",
-            # Birthdays
-            "addressbook#contacts@group.v.calendar.google.com",
-        ],
         block_duration=timedelta(hours=1),
     )
 
     # Update schedule in notion
     print(new_tasks)
-    # update_notion_tasks(new_tasks, use_async=True)
+    update_notion_tasks(new_tasks, use_async=True)
 
 
 if __name__ == "__main__":
