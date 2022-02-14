@@ -34,7 +34,7 @@ from typing import Optional
 
 
 def task_optimization(
-    notion_database_id: str,
+    notion_task_database_id: str,
     reclaim_tasklist_id: str,
     start_time: Optional[datetime] = None,
     deadline: Optional[datetime] = None,
@@ -44,7 +44,7 @@ def task_optimization(
 
     # Download tasks from notion
     logger.info("Downloading tasks from Notion")
-    tasks = download_notion_tasks(notion_database_id)
+    tasks = download_notion_tasks(notion_task_database_id)
 
     # Start time and deadline
     timezone = pytz.timezone("Europe/London")
@@ -75,6 +75,10 @@ def task_optimization(
         i: [time(hour=9, minute=0, second=0), time(hour=14, minute=0, second=0)]
         for i in range(5)
     }
+    work_times[5] = [
+        time(hour=9, minute=0, second=0),
+        time(hour=12, minute=0, second=0),
+    ]
 
     # Remove completed tasks
     for task in tasks.all_tasks:
@@ -105,10 +109,11 @@ if __name__ == "__main__":
     start = datetime.now()
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
-    notion_database_id = "89357b5cf7c749d6872a32636375b064"
+    notion_task_database_id = "89357b5cf7c749d6872a32636375b064"
     reclaim_tasklist_id = "Nkw0V2wwWll6QVJ5a0hMUA"
-    my_task_list_id = "WjhXM2pYNDc2eDNvNzhKNw"
-    task_optimization(notion_database_id, my_task_list_id, print_task_list=True)
+    task_optimization(
+        notion_task_database_id, reclaim_tasklist_id, print_task_list=True
+    )
     end = datetime.now()
     delta = (end - start).total_seconds() / 60
     logging.info(f"Took {delta:.01f} minutes to run")

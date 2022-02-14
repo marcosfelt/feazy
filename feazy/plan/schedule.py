@@ -1,18 +1,5 @@
 """
 Schedule a list of tasks
-
-## Optimization
-
-The problem is framed in terms of the total number of work hours end to end
-starting at 0 and ending at T, the total time spent on all projects in the horizon.
-
-I want to allocate tasks an early start and latest start date by looking at availability on my calendar. 
-I was originally going to break down tasks into blocks, but instead I am going to let [reclaim.ai](https://reclaim.ai/)
-do that. Instead, I will just assign tasks in large blocks to make sure I get reasonable early and late start dates.
-Then, I will let reclaim schedule them exactly.
-
-
-
 """
 from feazy.plan.utils import Graph, GraphSearch
 from .task import Task, TaskGraph
@@ -38,161 +25,6 @@ DEFAULT_TIMEZONE = "Europe/London"
 fmt_date = lambda d: d.astimezone(pytz.timezone(DEFAULT_TIMEZONE)).strftime(
     "%m/%d/%Y, %H:%M:%S"
 )
-
-
-def get_calendars(
-    cal: GoogleCalendar, only_selected=False, exclude: Optional[List[str]] = None
-) -> List[GoogleCalendar]:
-    """Get all calendars associated with an account
-
-    Arguments
-    --------
-    only_selected : bool
-        Only get calendars that are selected in the interface.
-
-    """
-    all_calendar_dicts = cal.service.calendarList().list().execute()
-    all_calendars = []
-    for c in all_calendar_dicts["items"]:
-        selected = c.get("selected", False)
-        if only_selected and not selected:
-            continue
-        if c["id"] in exclude:
-            continue
-        all_calendars.append(GoogleCalendar(c["id"]))
-    return all_calendars
-
-
-def get_availability(
-    calendars: Union[GoogleCalendar, List[GoogleCalendar]],
-    start_time: datetime,
-    end_time: datetime,
-    transparent_as_free: bool = True,
-    split_across_days: bool = True,
-    default_timezone: Optional[str] = DEFAULT_TIMEZONE,
-) -> List[Tuple[datetime, datetime]]:
-    """Get availability in a particular time range
-
-    Arguments
-    ----------
-    transparent_as_free : bool
-        Events that do not block time on the calendar are marked as available.
-    split_across_days : bool
-        Break availabilities that span across days at midnight
-
-    Returns availabilities represented as list of tuples of start and end times
-    """
-    logger = logging.getLogger(__name__)
-    # Get events in that time range
-    events = []
-    if type(calendars) == GoogleCalendar:
-        calendars = [calendars]
-    logger.debug("Downloading events")
-    for calendar in calendars:
-        these_events = calendar.get_events(
-            start_time,
-            end_time,
-            order_by="startTime",
-            single_events=True,
-            showDeleted=False,
-        )
-        for event in these_events:
-            # Exclude transparent events
-            if event.transparency == Transparency.TRANSPARENT and transparent_as_free:
-                continue
-            events.append(event)
-
-    # Sort events by increasing time
-    convert_dates_to_datetimes(events, default_timezone)
-    events = _remove_duplicates(events)
-    events.sort()
-
-    # Specify availability as a list of times where there aren't events
-    availabilities = []
-    logger.debug("Calculating avaialabilities")
-    if start_time < events[0].start:
-        availability = (
-            _split_across_days((start_time, events[0].start))
-            if split_across_days
-            else [(start_time, events[0].start)]
-        )
-        availabilities.extend(availability)
-        latest_end = events[0].start
-    else:
-        latest_end = start_time
-    for prev_event, next_event in zip(events, events[1:]):
-        bookend = prev_event.end == next_event.start
-        is_overlap = next_event.start < prev_event.end
-        if prev_event.end > latest_end and not bookend and not is_overlap:
-            availability = (
-                _split_across_days((prev_event.end, next_event.start))
-                if split_across_days
-                else [(prev_event.end, next_event.start)]
-            )
-            availabilities.extend(availability)
-        if prev_event.end > latest_end:
-            latest_end = prev_event.end
-    if latest_end < end_time:
-        availability = (
-            _split_across_days((events[-1].end, end_time))
-            if split_across_days
-            else [(latest_end, end_time)]
-        )
-        availabilities.extend(availability)
-    return availabilities
-
-
-def _remove_duplicates(events: List[Event]):
-    new_events = events[:1]
-    for event in events:
-        exists = False
-        for other in new_events:
-            if event.start == other.start and event.end == other.end:
-                exists = True
-        if not exists:
-            new_events.append(event)
-
-    return new_events
-
-
-def _split_across_days(
-    availability: Tuple[datetime, datetime]
-) -> List[Tuple[datetime, datetime]]:
-    """Split an availability window at 11:59:59 each day"""
-
-    dt = availability[1].day - availability[0].day
-    availabilities = []
-    if dt >= 1:
-        last = availability[0]
-        for _ in range(dt):
-            next = last + timedelta(days=1)
-            next = next.replace(hour=0, minute=0, second=0)
-            availabilities.append((last, next))
-            last = next
-        if availability[1] > last:
-            availabilities.append((last, availability[1]))
-    else:
-        availabilities = [availability]
-    return availabilities
-
-
-def convert_dates_to_datetimes(events: List[Event], default_timezone: str):
-    timezone = pytz.timezone(default_timezone)
-    for event in events:
-        if type(event.start) == date:
-            event.start = timezone.localize(
-                datetime.combine(
-                    event.start,
-                    time(
-                        0,
-                        0,
-                    ),
-                )
-            )
-        if type(event.end) == date:
-            event.end = timezone.localize(
-                datetime.combine(event.end - timedelta(days=1), time(23, 59, 59))
-            )
 
 
 def filter_availabilities(
@@ -586,11 +418,12 @@ def create_optimization_model_time_based(
             "early": early_vars,
             "late": late_vars,
         }.items():
-            if task.gtasks_id and fix_gtasks:
-                start = (
+            if task.gtasks_id and fix_gtasks and task.scheduled_early_start:
+                start = convert_datetime_to_model_hours(
+                    start_time,
                     task.scheduled_early_start
                     if name == "early"
-                    else task.scheduled_late_start
+                    else task.scheduled_late_start,
                 )
                 dur = int(task.duration.total_seconds() / 3600)
                 interval_var = model.NewOptionalFixedSizeIntervalVar(
@@ -930,6 +763,8 @@ def post_process_solution(
     for task in tasks.all_tasks:
         if task.gtasks_id and fix_gtasks:
             continue
+        elif task.gtasks_id and not fix_gtasks:
+            task._changed = True
         if solver.Value(presences[task.task_id]) > 0:
             task.scheduled_early_start = convert_model_hours_to_datetime(
                 start_time, solver.Value(early_vars[task.task_id].start)

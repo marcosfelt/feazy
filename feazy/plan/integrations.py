@@ -1,8 +1,8 @@
 from __future__ import print_function
 from copy import deepcopy
-from curses.ascii import HT
-from operator import gt
-import re
+from gcsa.google_calendar import GoogleCalendar, Event
+from gcsa.event import Transparency
+from beautiful_date import *
 from .task import Task, TaskGraph
 from notion_client import Client, AsyncClient
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -14,16 +14,173 @@ from googleapiclient.errors import HttpError
 from typing import List
 import pickle
 from dotenv import load_dotenv
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, date, time
 from pyrfc3339 import parse as rfc_parse
 import pytz
 import warnings
 import asyncio
 import os
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Union
 import logging
 
 load_dotenv()  # take eimport logging
+
+DEFAULT_TIMEZONE = "Europe/London"
+
+
+def get_calendars(
+    cal: GoogleCalendar, only_selected=False, exclude: Optional[List[str]] = None
+) -> List[GoogleCalendar]:
+    """Get all calendars associated with an account
+
+    Arguments
+    --------
+    only_selected : bool
+        Only get calendars that are selected in the interface.
+
+    """
+    all_calendar_dicts = cal.service.calendarList().list().execute()
+    all_calendars = []
+    for c in all_calendar_dicts["items"]:
+        selected = c.get("selected", False)
+        if only_selected and not selected:
+            continue
+        if c["id"] in exclude:
+            continue
+        all_calendars.append(GoogleCalendar(c["id"]))
+    return all_calendars
+
+
+def get_availability(
+    calendars: Union[GoogleCalendar, List[GoogleCalendar]],
+    start_time: datetime,
+    end_time: datetime,
+    transparent_as_free: bool = True,
+    split_across_days: bool = True,
+    default_timezone: Optional[str] = DEFAULT_TIMEZONE,
+) -> List[Tuple[datetime, datetime]]:
+    """Get availability in a particular time range
+
+    Arguments
+    ----------
+    transparent_as_free : bool
+        Events that do not block time on the calendar are marked as available.
+    split_across_days : bool
+        Break availabilities that span across days at midnight
+
+    Returns availabilities represented as list of tuples of start and end times
+    """
+    logger = logging.getLogger(__name__)
+    # Get events in that time range
+    events = []
+    if type(calendars) == GoogleCalendar:
+        calendars = [calendars]
+    logger.debug("Downloading events")
+    for calendar in calendars:
+        these_events = calendar.get_events(
+            start_time,
+            end_time,
+            order_by="startTime",
+            single_events=True,
+            showDeleted=False,
+        )
+        for event in these_events:
+            # Exclude transparent events
+            if event.transparency == Transparency.TRANSPARENT and transparent_as_free:
+                continue
+            events.append(event)
+
+    # Sort events by increasing time
+    convert_dates_to_datetimes(events, default_timezone)
+    events = _remove_duplicates(events)
+    events.sort()
+
+    # Specify availability as a list of times where there aren't events
+    availabilities = []
+    logger.debug("Calculating avaialabilities")
+    if start_time < events[0].start:
+        availability = (
+            _split_across_days((start_time, events[0].start))
+            if split_across_days
+            else [(start_time, events[0].start)]
+        )
+        availabilities.extend(availability)
+        latest_end = events[0].start
+    else:
+        latest_end = start_time
+    for prev_event, next_event in zip(events, events[1:]):
+        bookend = prev_event.end == next_event.start
+        is_overlap = next_event.start < prev_event.end
+        if prev_event.end > latest_end and not bookend and not is_overlap:
+            availability = (
+                _split_across_days((prev_event.end, next_event.start))
+                if split_across_days
+                else [(prev_event.end, next_event.start)]
+            )
+            availabilities.extend(availability)
+        if prev_event.end > latest_end:
+            latest_end = prev_event.end
+    if latest_end < end_time:
+        availability = (
+            _split_across_days((events[-1].end, end_time))
+            if split_across_days
+            else [(latest_end, end_time)]
+        )
+        availabilities.extend(availability)
+    return availabilities
+
+
+def _remove_duplicates(events: List[Event]):
+    new_events = events[:1]
+    for event in events:
+        exists = False
+        for other in new_events:
+            if event.start == other.start and event.end == other.end:
+                exists = True
+        if not exists:
+            new_events.append(event)
+
+    return new_events
+
+
+def _split_across_days(
+    availability: Tuple[datetime, datetime]
+) -> List[Tuple[datetime, datetime]]:
+    """Split an availability window at 11:59:59 each day"""
+
+    dt = availability[1].day - availability[0].day
+    availabilities = []
+    if dt >= 1:
+        last = availability[0]
+        for _ in range(dt):
+            next = last + timedelta(days=1)
+            next = next.replace(hour=0, minute=0, second=0)
+            availabilities.append((last, next))
+            last = next
+        if availability[1] > last:
+            availabilities.append((last, availability[1]))
+    else:
+        availabilities = [availability]
+    return availabilities
+
+
+def convert_dates_to_datetimes(events: List[Event], default_timezone: str):
+    timezone = pytz.timezone(default_timezone)
+    for event in events:
+        if type(event.start) == date:
+            event.start = timezone.localize(
+                datetime.combine(
+                    event.start,
+                    time(
+                        0,
+                        0,
+                    ),
+                )
+            )
+        if type(event.end) == date:
+            event.end = timezone.localize(
+                datetime.combine(event.end - timedelta(days=1), time(23, 59, 59))
+            )
 
 
 def connect_notion(logger, use_async=False) -> Client:
@@ -76,6 +233,7 @@ def download_notion_tasks(
     tasks = TaskGraph()
     tz = pytz.timezone(timezone)
     previous_ids = []
+    project_names = {}
     for result in results:
         extracted_props = {}
         extracted_props["task_id"] = result["id"]
@@ -90,6 +248,16 @@ def download_notion_tasks(
         to_do = props.get("To-Do")
         if to_do:
             extracted_props["description"] = to_do["title"][0]["plain_text"]
+
+        # Project
+        project_id = props["Project"]["relation"]
+        if project_id:
+            project_id = project_id[0]["id"]
+            project_name = project_names.get(project_id)
+            if project_name is None:
+                project_name = get_project_name(project_id, notion)
+                project_names[project_id] = project_name
+            extracted_props["project"] = project_name
 
         # Duration
         duration = props.get("Duration (hours)")
@@ -161,6 +329,21 @@ def download_notion_tasks(
 
     logging.info(f"Retrieved {len(tasks._nodes)} tasks from Notion")
     return tasks
+
+
+def get_project_name(project_page_id: str, notion: Client):
+    logger = logging.getLogger(__name__)
+    logger.debug(f"Getting project page {project_page_id}")
+    page = notion.pages.retrieve(project_page_id)
+    title = page["properties"]["Name"]["title"]
+    if len(title) > 0:
+        name = title[0]["plain_text"]
+    else:
+        name = ""
+    icon = page.get("icon")
+    if icon:
+        name = icon["emoji"] + "  " + name
+    return name
 
 
 def extract_date_property(
@@ -411,8 +594,10 @@ def sync_from_gtasks(tasks: TaskGraph, gtasks: List, copy=False) -> TaskGraph:
                         task.completed = True
 
                     # Due date update
-                    due_date = rfc_parse(gtask["due"])
-                    if due_date.date() >= task.scheduled_deadline:
+                    due_date = rfc_parse(gtask["due"]) if gtask.get("due") else None
+                    if due_date is None:
+                        continue
+                    elif due_date.date() >= task.scheduled_deadline:
                         task.scheduled_deadline = due_date.date()
     return tasks
 
@@ -454,7 +639,7 @@ def update_gtasks(
             task.scheduled_early_start.date() - today
         ) <= timedelta(days=30):
             body = {
-                "title": f"{task.description} (type: work duration: {dur}h due: {due_date} notbefore: {start})",
+                "title": f"{task.description} ({task.project}) (type: work duration: {dur}h due: {due_date} notbefore: {start})",
                 "notes": f"Notion ID: {task.task_id}",
             }
             batch.add(
@@ -463,7 +648,7 @@ def update_gtasks(
             )
         elif task.gtasks_id and task._changed:
             body = {
-                "title": f"{task.description} (type: work duration: {dur}h due: {due_date} notbefore: {start})",
+                "title": f"{task.description} ({task.project}) (type: work duration: {dur}h due: {due_date} notbefore: {start})",
             }
             batch.add(
                 service.tasks().update(

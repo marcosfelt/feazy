@@ -27,7 +27,6 @@ class Node:
 
     @property
     def adjacents(self) -> List[Node]:
-        self._logger.debug("Returned adjacent {")
         return self._adjacents
 
     def __repr__(self) -> str:

@@ -46,6 +46,7 @@ class Task(Node):
         deadline: Union[date, datetime] = None,
         wait_time: Optional[timedelta] = None,
         completed: Optional[bool] = False,
+        project: Optional[str] = None,
         **kwargs,
     ) -> None:
         if task_id is None:
@@ -57,6 +58,7 @@ class Task(Node):
         self._deadline = deadline
         self._wait_time = wait_time
         self._completed = completed
+        self._project = project
         self._scheduled_early_start: datetime = kwargs.get("scheduled_early_start")
         self._scheduled_early_finish: datetime = kwargs.get("scheduled_early_finish")
         self._scheduled_late_start: datetime = kwargs.get("scheduled_late_start")
@@ -144,6 +146,10 @@ class Task(Node):
     @property
     def successors(self) -> List[Task]:
         return self.adjacents
+
+    @property
+    def project(self) -> str:
+        return self._project if self._project else ""
 
     @property
     def completed(self) -> bool:
