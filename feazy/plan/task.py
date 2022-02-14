@@ -98,10 +98,7 @@ class Task(Node):
 
     @scheduled_early_start.setter
     def scheduled_early_start(self, val):
-        if type(val) in [date, datetime]:
-            self._scheduled_early_start = val
-        else:
-            raise ValueError(f"Start time ({val}) must be a date or datetime")
+        self._scheduled_early_start = val
 
     @property
     def scheduled_late_start(self) -> Union[date, datetime, None]:
@@ -109,10 +106,7 @@ class Task(Node):
 
     @scheduled_late_start.setter
     def scheduled_late_start(self, val):
-        if type(val) in [date, datetime]:
-            self._scheduled_late_start = val
-        else:
-            raise ValueError(f"Start time ({val}) must be a date or datetime")
+        self._scheduled_late_start = val
 
     @property
     def scheduled_early_finish(self) -> Union[date, datetime, None]:
@@ -120,10 +114,7 @@ class Task(Node):
 
     @scheduled_early_finish.setter
     def scheduled_early_finish(self, val):
-        if type(val) in [date, datetime]:
-            self._scheduled_early_finish = val
-        else:
-            raise ValueError("Scheduled finish must be a date or datetime")
+        self._scheduled_early_finish = val
 
     @property
     def scheduled_deadline(self) -> Union[date, datetime, None]:
@@ -131,10 +122,7 @@ class Task(Node):
 
     @scheduled_deadline.setter
     def scheduled_deadline(self, val):
-        if type(val) in [date, datetime]:
-            self._scheduled_deadline = val
-        else:
-            raise ValueError("Scheduled deadline must be a date or datetime")
+        self._scheduled_deadline = val
 
     @property
     def wait_time(self) -> timedelta:
@@ -142,6 +130,10 @@ class Task(Node):
             return self._wait_time
         else:
             return timedelta()
+
+    @wait_time.setter
+    def wait_time(self, val):
+        self._wait_time = val
 
     @property
     def successors(self) -> List[Task]:
@@ -167,8 +159,6 @@ class Task(Node):
 
     @gtasks_id.setter
     def gtasks_id(self, gid: str):
-        if type(gid) not in [str, None]:
-            raise TypeError(f"Gtasks id must be a string not {type(gid)}.")
         self._gtasks_id = gid
 
     def __repr__(self) -> str:

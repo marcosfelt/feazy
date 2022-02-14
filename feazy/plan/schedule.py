@@ -1,6 +1,7 @@
 """
 Schedule a list of tasks
 """
+from multiprocessing.connection import wait
 from feazy.plan.utils import Graph, GraphSearch
 from .task import Task, TaskGraph
 from gcsa.google_calendar import GoogleCalendar, Event
@@ -187,19 +188,26 @@ def breakdown_tasks(tasks: TaskGraph, block_duration: timedelta) -> TaskGraph:
             n_blocks = int(math.ceil(current_task.duration / block_duration))
             new_tasks[current_task.task_id].duration = block_duration
             new_tasks[current_task.task_id].description += f" (Block 1/{n_blocks})"
+            wait_time = current_task.wait_time
+            new_tasks[current_task.task_id].wait_time = timedelta()
             last_block = new_tasks[current_task.task_id]
             for b in range(n_blocks - 1):
                 new_block = Task(
                     task_id=current_task.task_id + f"_{b+2}",
                     duration=block_duration,
                     description=current_task.description + f" (Block {b+2}/{n_blocks})",
+                    earliest_start=current_task.earliest_start,
+                    deadline=current_task.deadline,
                 )
                 new_tasks.add_task(new_block)
                 new_tasks.add_dependency(last_block.task_id, new_block.task_id)
                 last_block = new_block
+            # Connect last block to successors
             for adj in current_task.adjacents:
                 new_tasks.remove_dependency(current_task.task_id, adj.task_id)
                 new_tasks.add_dependency(last_block.task_id, adj.task_id)
+            # Set wait time to be after the last block
+            last_block.wait_time = wait_time
 
     for task in new_tasks.all_tasks:
         if task.duration > block_duration:
@@ -221,6 +229,11 @@ def breakdown_tasks(tasks: TaskGraph, block_duration: timedelta) -> TaskGraph:
 def consolidate_tasks(original_tasks: TaskGraph, block_tasks: TaskGraph) -> TaskGraph:
     """Consolidate tasks after breadking them down"""
     new_tasks = deepcopy(original_tasks)
+    for task in new_tasks.all_tasks:
+        task.scheduled_early_start = None
+        task.scheduled_early_finish = None
+        task.scheduled_late_start = None
+        task.scheduled_deadline = None
 
     # Consolidate tasks
     for current_task in block_tasks.all_tasks:
@@ -327,7 +340,7 @@ def optimize_timing(
     # Formulate and solve optimization problem
     # First try fixing tasks that are already in Gtasks/Reclaim
     # If that fails, unfix and try retry solving
-    for fix_status in [True, False]:
+    for fix_status in [False]:
         (
             model,
             early_vars,
@@ -766,6 +779,7 @@ def post_process_solution(
         elif task.gtasks_id and not fix_gtasks:
             task._changed = True
         if solver.Value(presences[task.task_id]) > 0:
+
             task.scheduled_early_start = convert_model_hours_to_datetime(
                 start_time, solver.Value(early_vars[task.task_id].start)
             )
@@ -827,7 +841,7 @@ def optimize_schedule(
     n_days = (deadline - start_time).days
     filtered_availabilities = []
     timezone = pytz.timezone(work_timezone)
-    for d in range(n_days):
+    for d in range(1, n_days):
         new_date = start_time + timedelta(days=d)
         work_day = work_times.get(new_date.weekday())
         if work_day:

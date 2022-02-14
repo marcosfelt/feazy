@@ -32,6 +32,10 @@ from beautiful_date import *
 import logging
 from typing import Optional
 
+fmt_date = lambda d: d.astimezone(pytz.timezone("Europe/London")).strftime(
+    "%m/%d/%Y, %H:%M:%S"
+)
+
 
 def task_optimization(
     notion_task_database_id: str,
@@ -63,6 +67,8 @@ def task_optimization(
                     start_time = task.scheduled_early_start
     if deadline is None:
         deadline = timezone.localize((Apr / 30 / 2023)[00:00])
+    logging.info(f"Start Time: {fmt_date(start_time)}")
+    logging.info(f"Deadline: {fmt_date(deadline)}")
 
     # Merge in Gtasks/Reclaim
     logger.info("Syncing downloaded tasks with Gtasks")

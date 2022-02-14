@@ -247,7 +247,10 @@ def download_notion_tasks(
         # Description
         to_do = props.get("To-Do")
         if to_do:
-            extracted_props["description"] = to_do["title"][0]["plain_text"]
+            if len(to_do["title"]) > 0:
+                extracted_props["description"] = to_do["title"][0]["plain_text"]
+            else:
+                continue
 
         # Project
         project_id = props["Project"]["relation"]
@@ -361,7 +364,7 @@ def extract_date_property(
     return d
 
 
-fmt_date = lambda d: d.strftime("%Y-%m-%d")
+fmt_date = lambda day: day.strftime("%Y-%m-%d")
 
 
 async def _update_notion_tasks_async(request_bodies: List[Tuple[str, Dict]]):
@@ -586,6 +589,7 @@ def sync_from_gtasks(tasks: TaskGraph, gtasks: List, copy=False) -> TaskGraph:
     # If the deadline has been delayed, update that
     for task in tasks.all_tasks:
         if task.gtasks_id:
+            found_gtask = False
             for gtask in gtasks:
                 if gtask["id"] == task.gtasks_id:
                     # Completion status
@@ -597,8 +601,11 @@ def sync_from_gtasks(tasks: TaskGraph, gtasks: List, copy=False) -> TaskGraph:
                     due_date = rfc_parse(gtask["due"]) if gtask.get("due") else None
                     if due_date is None:
                         continue
-                    elif due_date.date() >= task.scheduled_deadline.date():
-                        task.scheduled_deadline = due_date.date()
+                    elif due_date >= task.scheduled_deadline:
+                        task.scheduled_deadline = due_date
+                    found_gtask = True
+            if not found_gtask:
+                task.gtasks_id = None
     return tasks
 
 
