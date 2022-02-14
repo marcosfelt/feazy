@@ -1,21 +1,33 @@
-import pdb
+from __future__ import print_function
+from copy import deepcopy
+from curses.ascii import HT
+from operator import gt
+import re
 from .task import Task, TaskGraph
 from notion_client import Client, AsyncClient
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build, Resource
+from googleapiclient.errors import HttpError
+from typing import List
+import pickle
 from dotenv import load_dotenv
 from datetime import timedelta, datetime
+from pyrfc3339 import parse as rfc_parse
 import pytz
 import warnings
 import asyncio
 import os
-from typing import Optional
-
-
-load_dotenv()  # take environment variables from .env.
+from typing import Optional, List, Tuple, Dict
 import logging
+
+load_dotenv()  # take eimport logging
 
 
 def connect_notion(logger, use_async=False) -> Client:
-    # Connect notion
+    """Connect to Notion API"""
     token = os.environ.get("NOTION_TOKEN")
     if token is None:
         raise ValueError("No notion token found in environment varaibles")
@@ -30,15 +42,27 @@ def download_notion_tasks(
     start_time: datetime,
     timezone="Europe/London",
 ) -> TaskGraph:
+    """Download tasks from Notion
+
+    Arguments
+    --------
+    database_id : str
+        id of the database with your tasks
+    start_time : datetime
+        Start time for tasks
+    timezone: str
+        Timezone to put dates in. Defaults to "Europe/London"
+
+    """
     logger = logging.getLogger(__name__)
 
     # Connect to notion
     notion = connect_notion(logger)
 
-    # Get all uncompleted task
+    # Get all uncompleted tasks
     logging.info("Querying notion for tasks")
-    query = {"filter": {"property": "Complete", "checkbox": {"equals": False}}}
-    results = notion.databases.query(database_id=database_id, **query).get("results")
+    # query = {"filter": {"property": "Complete", "checkbox": {"equals": False}}}
+    results = notion.databases.query(database_id=database_id, **{}).get("results")
     if results is None:
         raise ValueError("No results from Notion")
 
@@ -51,7 +75,6 @@ def download_notion_tasks(
 
     # Create tasks
     tasks = TaskGraph()
-    date_fmt = "%Y-%m-%d"
     tz = pytz.timezone(timezone)
     previous_ids = []
     for result in results:
@@ -61,9 +84,8 @@ def download_notion_tasks(
         previous_ids.append(extracted_props["task_id"])
         props = result["properties"]
 
-        # Assert that it is not complete
-        is_complete = props["Complete"]["checkbox"]
-        assert not is_complete
+        # Completion status
+        extracted_props["completed"] = props["Complete"]["checkbox"]
 
         # Description
         to_do = props.get("To-Do")
@@ -81,13 +103,6 @@ def download_notion_tasks(
         extracted_props["earliest_start"] = extract_date_property(
             props, "Earliest Start", start_time, tz=tz
         )
-        # if extracted_props["earliest_start"] is None:
-        #     from pprint import pprint
-
-        #     pprint(props)
-        #     import pdb
-
-        #     pdb.set_trace()
 
         # Deadline
         extracted_props["deadline"] = extract_date_property(
@@ -102,18 +117,26 @@ def download_notion_tasks(
             extracted_props["wait_time"] = timedelta(days=w)
 
         # Scheduled events
-        # extracted_props["scheduled_early_start"] = extract_date_property(
-        #     props, "Scheduled Early Start", start_time, tz=tz
-        # )
-        # extracted_props["scheduled_late_start"] = extract_date_property(
-        #     props, "Scheduled Late Start", start_time, tz=tz
-        # )
-        # extracted_props["scheduled_early_finish"] = extract_date_property(
-        #     props, "Scheduled Early Finish", start_time, tz=tz
-        # )
-        # extracted_props["scheduled_deadline"] = extract_date_property(
-        #     props, "Scheduled Due Date", start_time, tz=tz
-        # )
+        extracted_props["scheduled_early_start"] = extract_date_property(
+            props, "Scheduled Early Start", start_time, tz=tz
+        )
+        extracted_props["scheduled_late_start"] = extract_date_property(
+            props, "Scheduled Late Start", start_time, tz=tz
+        )
+        extracted_props["scheduled_early_finish"] = extract_date_property(
+            props, "Scheduled Early Finish", start_time, tz=tz
+        )
+        extracted_props["scheduled_deadline"] = extract_date_property(
+            props, "Scheduled Due Date", start_time, tz=tz
+        )
+
+        # Gtasks ID
+        gtasks_id = props.get("GoogleTaskId")
+        if gtasks_id:
+            if len(gtasks_id["rich_text"]) > 0:
+                extracted_props["gtasks_id"] = gtasks_id["rich_text"][0]["plain_text"]
+            else:
+                extracted_props["gtasks_id"] = None
 
         # Create task
         if duration and to_do:
@@ -139,7 +162,7 @@ def download_notion_tasks(
         print(tasks)
         raise ValueError(f"The following tasks are in cycles: {cycles}")
 
-    logging.info(f"Retrieved {len(tasks._nodes)} from Notion")
+    logging.info(f"Retrieved {len(tasks._nodes)} tasks from Notion")
     return tasks
 
 
@@ -155,9 +178,6 @@ def extract_date_property(
     if tz is not None and d is not None:
         date_format_str = "%Y-%m-%d" if date_format_str is None else date_format_str
         d = tz.localize(datetime.strptime(d["start"], date_format_str))
-    if d:
-        if d < start_time:
-            raise ValueError(f"""Deadline for task before start time for project.""")
 
     return d
 
@@ -165,15 +185,40 @@ def extract_date_property(
 fmt_date = lambda d: d.strftime("%Y-%m-%d")
 
 
-async def _update_notion_tasks(tasks: TaskGraph):
-    """"""
+async def _update_notion_tasks_async(request_bodies: List[Tuple[str, Dict]]):
+    """Update tasks in Notion"""
     logger = logging.getLogger(__name__)
 
     # Connect to notion
     async_notion = connect_notion(logger, use_async=True)
 
     # Update notion tasks
-    requests = []
+    requests = [
+        async_notion.pages.update(**{"page_id": task_id, "properties": props})
+        for task_id, props in request_bodies
+    ]
+    # Send requests
+    logging.info(f"Updating {len(requests)} tasks in Notion")
+    await asyncio.gather(*requests)
+
+
+def _update_notion_tasks(request_bodies: List[Tuple[str, Dict]]):
+    """Update tasks in Notion"""
+    logger = logging.getLogger(__name__)
+
+    # Connect to notion
+    notion = connect_notion(logger, use_async=False)
+
+    # Update notion tasks
+    logging.info(f"Updating {len(requests)} tasks in Notion")
+    requests = [
+        notion.pages.update(**{"page_id": task_id, "properties": props})
+        for task_id, props in request_bodies
+    ]
+
+
+def update_notion_tasks(tasks: TaskGraph, use_async=False):
+    request_bodies = []
     for task in tasks.all_tasks:
         if task.scheduled_early_start or task.scheduled_deadline:
             props = {
@@ -197,46 +242,22 @@ async def _update_notion_tasks(tasks: TaskGraph):
                     if task.scheduled_deadline
                     else None
                 },
+                "GoogleTaskId": {
+                    "rich_text": [
+                        {"text": {"content": task.gtasks_id if task.gtasks_id else ""}}
+                    ]
+                },
             }
-            requests.append(
-                async_notion.pages.update(
-                    **{"page_id": task.task_id, "properties": props}
-                )
-            )
+            request_bodies.append((task.task_id, props))
 
-    # Send requests
-    logging.info(f"Updating {len(requests)} tasks in Notion")
-    await asyncio.gather(*requests)
-
-
-def update_notion_tasks(tasks: TaskGraph, use_async=False):
     if use_async:
-        asyncio.run(_update_notion_tasks(tasks))
+        asyncio.run(_update_notion_tasks_async(request_bodies))
     else:
-        logger = logging.getLogger(__name__)
-
-        # Connect to notion
-        notion = connect_notion(logger, use_async=False)
-        logging.info(f"Updating {len(tasks._nodes)} tasks in Notion")
-        for task in tasks.all_tasks:
-            props = {
-                "Scheduled Early Start": {
-                    "date": {"start": fmt_date(task.scheduled_early_start)}
-                },
-                "Scheduled Late Start": {
-                    "date": {"start": fmt_date(task.scheduled_late_start)}
-                },
-                "Scheduled Early Finish": {
-                    "date": {"start": fmt_date(task.scheduled_early_finish)}
-                },
-                "Scheduled Due Date": {
-                    "date": {"start": fmt_date(task.scheduled_deadline)}
-                },
-            }
-            notion.pages.update(**{"page_id": task.task_id, "properties": props})
+        _update_notion_tasks(request_bodies)
 
 
-def get_page_url(page_id: str):
+def get_notion_page_url(page_id: str):
+    """Get a Notion page url from a page id"""
     # Connect notion
     token = os.environ.get("NOTION_TOKEN")
     if token is None:
@@ -246,3 +267,212 @@ def get_page_url(page_id: str):
     page = notion.pages.retrieve(page_id)
 
     return page["url"]
+
+
+def _get_default_credentials_path() -> str:
+    """Checks if ".credentials" folder in home directory exists. If not, creates it.
+    :return: expanded path to .credentials folder
+    """
+    home_dir = os.path.expanduser("~")
+    credential_dir = os.path.join(home_dir, ".credentials")
+    if not os.path.exists(credential_dir):
+        os.makedirs(credential_dir)
+    credential_path = os.path.join(credential_dir, "credentials.json")
+    return credential_path
+
+
+def _get_credentials(
+    token_path: str,
+    credentials_dir: str,
+    credentials_file: str,
+    scopes: List[str],
+    save_token: bool,
+    host: str,
+    port: int,
+) -> Credentials:
+    credentials = None
+
+    if os.path.exists(token_path):
+        with open(token_path, "rb") as token_file:
+            credentials = pickle.load(token_file)
+
+    if not credentials or not credentials.valid:
+        if credentials and credentials.expired and credentials.refresh_token:
+            credentials.refresh(Request())
+        else:
+            credentials_path = os.path.join(credentials_dir, credentials_file)
+            flow = InstalledAppFlow.from_client_secrets_file(credentials_path, scopes)
+            credentials = flow.run_local_server(host=host, port=port)
+
+        if save_token:
+            with open(token_path, "wb") as token_file:
+                pickle.dump(credentials, token_file)
+
+    return credentials
+
+
+def get_task_lists():
+    """Shows basic usage of the Tasks API.
+    Prints the title and ID of the first 10 task lists.
+    """
+    creds = None
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first
+    # time.
+
+    SCOPES = ["https://www.googleapis.com/auth/tasks.readonly"]
+
+    credentials_path = _get_default_credentials_path()
+    credentials_dir, credentials_file = os.path.split(credentials_path)
+    token_path = os.path.join(credentials_dir, "token.pickle")
+    credentials = _get_credentials(
+        token_path=token_path,
+        credentials_dir=credentials_dir,
+        credentials_file=credentials_file,
+        scopes=SCOPES,
+        save_token=True,
+        host="localhost",
+        port=8080,
+    )
+    try:
+        service = build("tasks", "v1", credentials=credentials)
+
+        # Call the Tasks API
+        results = service.tasklists().list(maxResults=10).execute()
+        items = results.get("items", [])
+
+        if not items:
+            print("No task lists found.")
+            return
+
+        print("Task lists:")
+        for item in items:
+            print("{0} ({1})".format(item["title"], item["id"]))
+    except HttpError as err:
+        print(err)
+
+
+def get_gtasks_service() -> Resource:
+    logger = logging.getLogger(__name__)
+
+    SCOPES = ["https://www.googleapis.com/auth/tasks"]
+
+    credentials_path = _get_default_credentials_path()
+    credentials_dir, credentials_file = os.path.split(credentials_path)
+    token_path = os.path.join(credentials_dir, "token.pickle")
+    credentials = _get_credentials(
+        token_path=token_path,
+        credentials_dir=credentials_dir,
+        credentials_file=credentials_file,
+        scopes=SCOPES,
+        save_token=True,
+        host="localhost",
+        port=8080,
+    )
+    try:
+        service = build("tasks", "v1", credentials=credentials)
+        return service
+    except HttpError as err:
+        logger.error(err)
+        raise err
+
+
+def get_gtasks(service, reclaim_list_id: str) -> List[Task]:
+    logger = logging.getLogger(__name__)
+    finished = False
+    try:
+        request = service.tasks().list(tasklist=reclaim_list_id)
+        results = request.execute()
+        items = results.get("items", [])
+        while not finished:
+            if results.get("nextPageToken"):
+                request = service.tasks().list_next(request, results)
+                results = request.execute()
+                items.extend(results.get("items", []))
+            else:
+                finished = True
+    except HttpError as err:
+        logger.error(err)
+        raise err
+
+    return items
+
+
+def sync_from_gtasks(tasks: TaskGraph, gtasks: List, copy=False) -> TaskGraph:
+    """Update task completion status based on Gtasks"""
+    if copy:
+        tasks = deepcopy(tasks)
+
+    # Set tasks completed in Gtasks but not in Notion to be complete in Notion
+    # If the deadline has been delayed, update that
+    for task in tasks.all_tasks:
+        if task.gtasks_id:
+            for gtask in gtasks:
+                if gtask["id"] == task.gtasks_id:
+                    # Completion status
+                    completed = True if gtask["status"] == "completed" else False
+                    if completed and not task.completed:
+                        task.completed = True
+
+                    # Due date update
+                    due_date = rfc_parse(gtask["due"])
+                    if due_date.date() >= task.scheduled_deadline:
+                        task.scheduled_deadline = due_date.date()
+    return tasks
+
+
+def update_gtasks(
+    tasks: TaskGraph, service: Resource, reclaim_list_id: str, copy=False
+) -> TaskGraph:
+    """Insert and update tasks in Gtasks
+
+    Insert tasks with early starts less than 30 days from today
+    Update tasks that have been changed
+
+    Returns a tasks graph with update gtasks_ids
+
+    """
+    if copy:
+        tasks = deepcopy(tasks)
+
+    logger = logging.getLogger(__name__)
+    batch = service.new_batch_http_request()
+    today = datetime.today().date()
+
+    def update_gtasks_id(request_id, response, exception):
+        if exception is not None:
+            logger.error(exception)
+            raise exception
+        else:
+            gtasks_id = response["id"]
+            task_id = response["notes"].lstrip("Notion ID: ")
+            tasks[task_id].gtasks_id = gtasks_id
+
+    for task in tasks.all_tasks:
+        if not task.scheduled_early_start:
+            continue
+        dur = task.duration.total_seconds() / 3600
+        due_date = fmt_date(task.scheduled_early_finish.date())
+        start = fmt_date(task.scheduled_early_start.date())
+        if not task.gtasks_id and (
+            task.scheduled_early_start.date() - today
+        ) <= timedelta(days=30):
+            body = {
+                "title": f"{task.description} (type: work duration: {dur}h due: {due_date} notbefore: {start})",
+                "notes": f"Notion ID: {task.task_id}",
+            }
+            batch.add(
+                service.tasks().insert(tasklist=reclaim_list_id, body=body),
+                callback=update_gtasks_id,
+            )
+        elif task.gtasks_id and task._changed:
+            body = {
+                "title": f"{task.description} (type: work duration: {dur}h due: {due_date} notbefore: {start})",
+            }
+            batch.add(
+                service.tasks().update(
+                    tasklist=reclaim_list_id, task=task.gtasks_id, body=body
+                )
+            )
+    batch.execute()
+    return tasks

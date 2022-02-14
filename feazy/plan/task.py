@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 from .utils import Node, Graph, GraphDirection
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Type, Union
 from datetime import date, datetime, time, timedelta
 import warnings
 from enum import Enum
@@ -45,6 +45,7 @@ class Task(Node):
         earliest_start: Optional[Union[date, datetime]] = None,
         deadline: Union[date, datetime] = None,
         wait_time: Optional[timedelta] = None,
+        completed: Optional[bool] = False,
         **kwargs,
     ) -> None:
         if task_id is None:
@@ -55,10 +56,13 @@ class Task(Node):
         self._earliest_start = earliest_start
         self._deadline = deadline
         self._wait_time = wait_time
+        self._completed = completed
         self._scheduled_early_start: datetime = kwargs.get("scheduled_early_start")
         self._scheduled_early_finish: datetime = kwargs.get("scheduled_early_finish")
         self._scheduled_late_start: datetime = kwargs.get("scheduled_late_start")
         self._scheduled_deadline: datetime = kwargs.get("scheduled_deadline")
+        self._gtasks_id: Optional[str] = kwargs.get("gtasks_id")
+        self._changed: bool = False
 
     @property
     def task_id(self):
@@ -140,6 +144,26 @@ class Task(Node):
     @property
     def successors(self) -> List[Task]:
         return self.adjacents
+
+    @property
+    def completed(self) -> bool:
+        return self._completed
+
+    @completed.setter
+    def completed(self, status: bool):
+        if type(status) != bool:
+            raise TypeError(f"Status must be a boolean not {type(status)}.")
+        self._compelted = status
+
+    @property
+    def gtasks_id(self):
+        return self._gtasks_id
+
+    @gtasks_id.setter
+    def gtasks_id(self, gid: str):
+        if type(gid) not in [str, None]:
+            raise TypeError(f"Gtasks id must be a string not {type(gid)}.")
+        self._gtasks_id = gid
 
     def __repr__(self) -> str:
         adjs = "".join([f"{adj.task_id[:5]}, " for adj in self.successors]).rstrip(", ")

@@ -6,15 +6,14 @@ authors = ["Kobi Felton <kobi.c.f@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.7.1,<3.10"
-psutil = "^5.9.0"
-pyobjc = "^8.1"
 pandas = "^1.3.5"
 gcsa = "^1.3.0"
 beautiful-date = "^2.0.0"
-python-dateutil = "^2.8.2"
-base32-crockford = "^0.3.0"
 notion-client = "^0.8.0"
 python-dotenv = "^0.19.2"
+aw-client = "^0.5.7"
+gtasks = "^0.1.3"
+pyRFC3339 = "^1.1"
 
 [tool.poetry.dev-dependencies]
 black = "^21.12b0"

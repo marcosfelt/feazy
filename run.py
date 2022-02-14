@@ -1,92 +1,63 @@
-from datetime import datetime, timedelta, time, date
+"""
+1. Download all tasks from Notion
+
+2. Merge in information from Reclaim
+    - Sync reclaim completion status -> tasks downloaded from Notion
+    - If due dates postponed in Reclaim/Google Tasks, update tasks downloaded from Notion
+
+3. Optimization
+    - Fix early and late starts for tasks already in Reclaim and try to solve
+    - If that doesn't work, unfix and re-optimize. Note that Reclaim tasks were changed
+
+4. Update Reclaim
+    - If tasks already in Reclaim were changed, update them
+    - Add tasks not in Reclaim with scheduled early starts within one month from now
+
+5. Update everything Notion
+
+"""
+
+from datetime import datetime, timedelta, time
 from feazy.plan import (
-    Task,
-    TaskGraph,
-    read_file,
     optimize_schedule,
     download_notion_tasks,
     update_notion_tasks,
+    get_gtasks,
+    get_gtasks_service,
+    sync_from_gtasks,
+    update_gtasks,
 )
-from gcsa.google_calendar import GoogleCalendar
 import pytz
 from beautiful_date import *
-from google.auth.exceptions import RefreshError
-import os
-from pathlib import Path
-
 import logging
+from typing import Optional
 
 
-def test_optimization(main_calendar="kobi.c.f@gmail.com"):
-    # Read in tasks and dependencies
-    task_list = read_file("data/tasks.txt")
-    dependencies = read_file("data/dependencies.txt")
-
-    # Put tasks in object
-    tasks = TaskGraph(
-        [
-            Task(
-                task_id=task[0],
-                description=task[1],
-                duration=timedelta(hours=int(task[2])),
-            )
-            for task in task_list
-        ]
-    )
-
-    # Add depdencies
-    for dependency in dependencies:
-        tasks.add_dependency(dependency[0], dependency[1])
-
-    # Start time and deadline
-    timezone = pytz.timezone("Europe/London")
-    start_time = timezone.localize((May / 1 / 2022)[00:00])
-    deadline = start_time + 21 * days
-
-    # Work Times (9-5 M-F)
-    work_times = {
-        i: [time(hour=9, minute=0, second=0), time(hour=13, minute=0, second=0)]
-        for i in range(6)
-    }
-
-    # Google calendar for availabilities
-    try:
-        calendar = GoogleCalendar()
-    except RefreshError:
-        p = Path("~/.credentials/token.pickle")
-        os.remove(p)
-        calendar = GoogleCalendar()
-    new_tasks = optimize_schedule(
-        tasks,
-        work_times=work_times,
-        start_time=start_time,
-        deadline=deadline,
-        base_calendar=calendar,
-        exclude_calendar_ids=[
-            # Weather calendar
-            "jc1o00r4ve65t348l20l2q0090ken3q7@import.calendar.google.com",
-            # chandler's calendar
-            "jcgsville@gmail.com",
-            # Birthdays
-            "addressbook#contacts@group.v.calendar.google.com",
-        ],
-        block_duration=timedelta(hours=2),
-    )
-    print(new_tasks)
-
-
-def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
+def task_optimization(
+    notion_database_id: str,
+    reclaim_tasklist_id: str,
+    start_time: Optional[datetime] = None,
+    deadline: Optional[datetime] = None,
+    print_task_list=False,
+):
     logger = logging.getLogger(__name__)
 
     # Start time and deadline
     timezone = pytz.timezone("Europe/London")
-    start_time = timezone.localize((Feb / 14 / 2022)[00:00])
-    deadline = timezone.localize((Apr / 30 / 2023)[00:00])
+    if start_time is None:
+        start_time = timezone.localize(datetime.today())
+    if deadline is None:
+        deadline = timezone.localize((Apr / 30 / 2023)[00:00])
 
-    # Read in tasks and dependencies
-    logging.debug("Downloading tasks from Notion")
-    database_id = "89357b5cf7c749d6872a32636375b064"
-    tasks = download_notion_tasks(database_id, start_time)
+    # Download tasks from notion
+    logger.info("Downloading tasks from Notion")
+    tasks = download_notion_tasks(notion_database_id, start_time)
+
+    # Merge in Gtasks/Reclaim
+    logger.info("Syncing downloaded tasks with Gtasks")
+    gservice = get_gtasks_service()
+    gtasks = get_gtasks(gservice, reclaim_tasklist_id)
+    tasks = sync_from_gtasks(tasks, gtasks)
 
     # Work Times (9-5 M-F)
     work_times = {
@@ -94,7 +65,9 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
         for i in range(6)
     }
 
-    # Optimize scheudle
+    # Optimize schedule
+    logger.info("Optimizing schedule")
+    new_tasks = tasks
     new_tasks = optimize_schedule(
         tasks,
         work_times=work_times,
@@ -102,9 +75,13 @@ def notion_task_optimization(base_calendar="kobi.c.f@gmail.com"):
         deadline=deadline,
         block_duration=timedelta(hours=1),
     )
+    if print_task_list:
+        print(new_tasks)
+
+    # Update Gtasks/Reclaim
+    new_tasks = update_gtasks(new_tasks, gservice, reclaim_tasklist_id)
 
     # Update schedule in notion
-    print(new_tasks)
     update_notion_tasks(new_tasks, use_async=True)
 
 
@@ -121,7 +98,10 @@ if __name__ == "__main__":
     start = datetime.now()
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
-    notion_task_optimization()
+    notion_database_id = "89357b5cf7c749d6872a32636375b064"
+    reclaim_tasklist_id = "Nkw0V2wwWll6QVJ5a0hMUA"
+    my_task_list_id = "S3EzWFhhUkV5Skk5UlRiTg"
+    task_optimization(notion_database_id, my_task_list_id)
     end = datetime.now()
     delta = (end - start).total_seconds() / 60
     logging.info(f"Took {delta:.01f} minutes to run")

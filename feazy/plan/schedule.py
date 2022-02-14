@@ -11,31 +11,6 @@ I was originally going to break down tasks into blocks, but instead I am going t
 do that. Instead, I will just assign tasks in large blocks to make sure I get reasonable early and late start dates.
 Then, I will let reclaim schedule them exactly.
 
-So the process looks like this:
-
-Google Sheet w/ Tasks --> Optimize Early & Late Start --> Add tasks to Google tasks --> Reclaim schedules tasks
-
-Instead of linear time, I am going to use available time in hours. The  algorithm will therefore schedule 
-within this availalbe time and, then, I will need to convert back to linear time (i.e., actual dates).
-
-The specific formulation:
-
-Objectives:
-- Minimize total project duration 
-- Maximize slack (i.e., minimizing the dependency on finishing any task in the minimum amount of time)
-
-Decision variables:
-- Early start times
-- Late start times
-both with bounds based on the start and deadlines
-
-Constraints:
-- Tasks cannot overlap
-- Task dependencies must be obeyed
-- Slack must be >= 0 for all tasks
-
-## Calendar placement
-Once the exact start times are figured out, convert back to real time
 
 
 """
@@ -874,7 +849,6 @@ def solve_cpsat(
     solver.parameters.log_search_progress = log_search_progress
     solver.parameters.num_search_workers = num_workers
     solver.parameters.max_time_in_seconds = timeout
-    # solver.parameters.cp_model_probing_level = 0
 
     cb = SolutionCallback(
         max_solutions=max_solutions,
@@ -899,13 +873,6 @@ def solve_cpsat(
         cb.reset()
         status = solver.Solve(model, solution_callback=cb)
 
-        # model.ClearHints()
-        # for var in early_vars.values():
-        #     model.AddHint(var.start, solver.Value(var.start))
-        # model.Add(finish <= solver.Value(finish))
-        # model.Maximize(sum_task_slacks)
-        # cb.reset()
-        # status = solver.Solve(model, solution_callback=cb)
     else:
         status = solver.Solve(model, solution_callback=cb)
 
