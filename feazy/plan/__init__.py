@@ -1,4 +1,4 @@
-from .schedule import optimize_schedule, get_calendars
+from .schedule import optimize_schedule
 from .task import Task, TaskGraph, TaskDifficulty
 from .utils import Graph, GraphDirection, read_file
 from .integrations import (
@@ -9,4 +9,6 @@ from .integrations import (
     get_gtasks_service,
     sync_from_gtasks,
     update_gtasks,
+    get_calendars,
+    get_availability,
 )

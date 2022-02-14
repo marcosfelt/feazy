@@ -28,6 +28,16 @@ To run the scheduling algorithm:
 python run.py
 ```
 
+## Setting it up to run on a schedule
+
+On mac
+1. Copy `static/com.feazy.run.plist` to `~/Library/LaunchAgents`
+2. Change line 8 and line 21 to match the paths to `feazy.sh`. You can also change the time (default is to run daily at 12:30 PM)
+2. Run `launchctl load ~/Library/LaunchAgents/com.feazy.run.plist`
+3. Install terminal-notifier: `brew install terminal-notifier`
+4. Run `chmod +x feazy.sh`
+
+
 ## Lessons on what worked and what didn't
 
 What worked:

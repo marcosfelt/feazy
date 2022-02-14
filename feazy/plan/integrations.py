@@ -597,7 +597,7 @@ def sync_from_gtasks(tasks: TaskGraph, gtasks: List, copy=False) -> TaskGraph:
                     due_date = rfc_parse(gtask["due"]) if gtask.get("due") else None
                     if due_date is None:
                         continue
-                    elif due_date.date() >= task.scheduled_deadline:
+                    elif due_date.date() >= task.scheduled_deadline.date():
                         task.scheduled_deadline = due_date.date()
     return tasks
 
