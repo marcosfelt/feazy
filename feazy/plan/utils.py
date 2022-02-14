@@ -73,7 +73,8 @@ class Graph:
         if val in self._nodes:
             current = self._nodes.pop(val)
             for node in self._nodes.values():
-                node.remove_adjacent(current)
+                if current in node.adjacents:
+                    node.remove_adjacent(current)
             return current
 
     def get_node(self, val: str) -> Node:

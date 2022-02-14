@@ -39,7 +39,6 @@ def connect_notion(logger, use_async=False) -> Client:
 
 def download_notion_tasks(
     database_id: str,
-    start_time: datetime,
     timezone="Europe/London",
 ) -> TaskGraph:
     """Download tasks from Notion
@@ -101,13 +100,11 @@ def download_notion_tasks(
 
         # Earliest Start
         extracted_props["earliest_start"] = extract_date_property(
-            props, "Earliest Start", start_time, tz=tz
+            props, "Earliest Start", tz=tz
         )
 
         # Deadline
-        extracted_props["deadline"] = extract_date_property(
-            props, "Deadline", start_time, tz=tz
-        )
+        extracted_props["deadline"] = extract_date_property(props, "Deadline", tz=tz)
 
         # Wait time
         wait_time = props.get("Wait Time (days)")
@@ -118,16 +115,16 @@ def download_notion_tasks(
 
         # Scheduled events
         extracted_props["scheduled_early_start"] = extract_date_property(
-            props, "Scheduled Early Start", start_time, tz=tz
+            props, "Scheduled Early Start", tz=tz
         )
         extracted_props["scheduled_late_start"] = extract_date_property(
-            props, "Scheduled Late Start", start_time, tz=tz
+            props, "Scheduled Late Start", tz=tz
         )
         extracted_props["scheduled_early_finish"] = extract_date_property(
-            props, "Scheduled Early Finish", start_time, tz=tz
+            props, "Scheduled Early Finish", tz=tz
         )
         extracted_props["scheduled_deadline"] = extract_date_property(
-            props, "Scheduled Due Date", start_time, tz=tz
+            props, "Scheduled Due Date", tz=tz
         )
 
         # Gtasks ID
@@ -169,7 +166,6 @@ def download_notion_tasks(
 def extract_date_property(
     props: dict,
     property: str,
-    start_time: datetime,
     tz=None,
     date_format_str: Optional[str] = None,
 ):

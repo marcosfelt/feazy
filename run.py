@@ -42,16 +42,27 @@ def task_optimization(
 ):
     logger = logging.getLogger(__name__)
 
+    # Download tasks from notion
+    logger.info("Downloading tasks from Notion")
+    tasks = download_notion_tasks(notion_database_id)
+
     # Start time and deadline
     timezone = pytz.timezone("Europe/London")
     if start_time is None:
         start_time = timezone.localize(datetime.today())
+        for task in tasks.all_tasks:
+            if (
+                task.scheduled_early_start is not None
+                and task.scheduled_deadline is not None
+                and not task.completed
+            ):
+                if (
+                    task.scheduled_early_start < start_time
+                    and task.scheduled_deadline > start_time
+                ):
+                    start_time = task.scheduled_early_start
     if deadline is None:
         deadline = timezone.localize((Apr / 30 / 2023)[00:00])
-
-    # Download tasks from notion
-    logger.info("Downloading tasks from Notion")
-    tasks = download_notion_tasks(notion_database_id, start_time)
 
     # Merge in Gtasks/Reclaim
     logger.info("Syncing downloaded tasks with Gtasks")
@@ -62,12 +73,16 @@ def task_optimization(
     # Work Times (9-5 M-F)
     work_times = {
         i: [time(hour=9, minute=0, second=0), time(hour=14, minute=0, second=0)]
-        for i in range(6)
+        for i in range(5)
     }
+
+    # Remove completed tasks
+    for task in tasks.all_tasks:
+        if task.completed:
+            tasks.remove_task(task.task_id)
 
     # Optimize schedule
     logger.info("Optimizing schedule")
-    new_tasks = tasks
     new_tasks = optimize_schedule(
         tasks,
         work_times=work_times,
@@ -79,6 +94,7 @@ def task_optimization(
         print(new_tasks)
 
     # Update Gtasks/Reclaim
+    logger.info("Updating Gtasks")
     new_tasks = update_gtasks(new_tasks, gservice, reclaim_tasklist_id)
 
     # Update schedule in notion
@@ -86,22 +102,13 @@ def task_optimization(
 
 
 if __name__ == "__main__":
-    # timezone = pytz.timezone("Europe/London")
-    # start_time = timezone.localize((Feb / 7 / 2022)[00:00])
-    # database_id = "89357b5cf7c749d6872a32636375b064"
-    # tasks = download_notion_tasks(database_id=database_id, start_time=start_time)
-    # t = tasks.all_tasks[0]
-    # t.scheduled_start = date(2022, 2, 14)
-    # t.scheduled_deadline = date(2022, 2, 28)
-    # print(t)
-
     start = datetime.now()
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     notion_database_id = "89357b5cf7c749d6872a32636375b064"
     reclaim_tasklist_id = "Nkw0V2wwWll6QVJ5a0hMUA"
-    my_task_list_id = "S3EzWFhhUkV5Skk5UlRiTg"
-    task_optimization(notion_database_id, my_task_list_id)
+    my_task_list_id = "WjhXM2pYNDc2eDNvNzhKNw"
+    task_optimization(notion_database_id, my_task_list_id, print_task_list=True)
     end = datetime.now()
     delta = (end - start).total_seconds() / 60
     logging.info(f"Took {delta:.01f} minutes to run")

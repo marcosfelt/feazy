@@ -188,8 +188,7 @@ class TaskGraph(Graph):
             self._nodes[task.val] = task
 
     def remove_task(self, task_id):
-        if task_id in self._tasks:
-            return self._tasks.pop(task_id)
+        return self.remove_node(task_id)
 
     def remove_dependency(self, source_task_id: str, successor_task_id: str):
         self.remove_edge(source_task_id, successor_task_id)

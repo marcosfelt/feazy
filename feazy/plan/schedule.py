@@ -474,7 +474,6 @@ def optimize_timing(
     start_time: Optional[datetime] = None,
     deadline: Optional[datetime] = None,
     max_solutions: Optional[int] = 10,
-    num_retries: Optional[int] = 3,
     timeout: Optional[float] = 60.0,
     separate_objectives=False,
 ) -> TaskGraph:
@@ -494,23 +493,26 @@ def optimize_timing(
     )
 
     # Formulate and solve optimization problem
-    (
-        model,
-        early_vars,
-        late_vars,
-        presences,
-        late_finish_obj_var,
-        tasks_completed_obj,
-        tasks_completed,
-        sum_task_slacks,
-    ) = create_optimization_model_time_based(
-        task_blocks,
-        availabilities,
-        start_time,
-        deadline,
-        set_objective=not separate_objectives,
-    )
-    for _ in range(num_retries):
+    # First try fixing tasks that are already in Gtasks/Reclaim
+    # If that fails, unfix and try retry solving
+    for fix_status in [True, False]:
+        (
+            model,
+            early_vars,
+            late_vars,
+            presences,
+            late_finish_obj_var,
+            tasks_completed_obj,
+            tasks_completed,
+            sum_task_slacks,
+        ) = create_optimization_model_time_based(
+            task_blocks,
+            availabilities,
+            start_time,
+            deadline,
+            set_objective=not separate_objectives,
+            fix_gtasks=fix_status,
+        )
         solver, status = solve_cpsat(
             model,
             early_vars=early_vars,
@@ -532,6 +534,7 @@ def optimize_timing(
                 early_vars=early_vars,
                 late_vars=late_vars,
                 presences=presences,
+                fix_gtasks=fix_status,
             )
 
             # Consolidate tasks
@@ -539,8 +542,6 @@ def optimize_timing(
                 original_tasks=tasks, block_tasks=new_tasks
             )
             return consolidated_tasks
-        else:
-            continue
     raise ValueError("No solution found")
 
 
@@ -562,6 +563,7 @@ def create_optimization_model_time_based(
     deadline: datetime,
     set_objective=False,
     optimize_early_finish=False,
+    fix_gtasks=False,
 ) -> Tuple[cp_model.CpModel, Dict, Dict]:
     """Create OR-tools optimization model. Time is in hours"""
     logger = logging.getLogger(__name__)
@@ -577,46 +579,61 @@ def create_optimization_model_time_based(
         start_time, availabilities[0][0]
     )
     logger.debug(f"Project deadline hours: {project_deadline_hours}")
-    all_tasks = tasks.all_tasks
-    random_all_tasks = np.random.choice(all_tasks, len(all_tasks), replace=False)
-    for task in random_all_tasks:
+    for task in tasks.all_tasks:
         presence = model.NewBoolVar(f"presence_{task.task_id}")
         presences[task.task_id] = presence
         for name, var_group in {
             "early": early_vars,
             "late": late_vars,
         }.items():
-            lb = (
-                0
-                if task.earliest_start is None
-                else convert_datetime_to_model_hours(start_time, task.earliest_start)
-            )
-            if lb < 0:
-                raise ValueError(
-                    f"""Task "{task.description}" starts before start time."""
+            if task.gtasks_id and fix_gtasks:
+                start = (
+                    task.scheduled_early_start
+                    if name == "early"
+                    else task.scheduled_late_start
                 )
-            ub = (
-                project_deadline_hours
-                if task.deadline is None
-                else convert_datetime_to_model_hours(start_time, task.deadline)
-            )
-            if ub > project_deadline_hours:
-                raise ValueError(
-                    f"""Task "{task.description}" deadline {fmt_date(task.deadline)} is greater than project deadline {deadline}."""
+                dur = int(task.duration.total_seconds() / 3600)
+                interval_var = model.NewOptionalFixedSizeIntervalVar(
+                    start, dur, presence, f"{name}_interval_{task.task_id}"
                 )
-            # ub = project_deadline_hours
-            start_var = model.NewIntVar(lb, ub, f"{name}_start_{task.task_id}")
-            dur = int(task.duration.total_seconds() / 3600)
+                var_group[task.task_id] = task_type(
+                    start=start,
+                    end=start + dur,
+                    interval=interval_var,
+                )
+            else:
+                lb = (
+                    0
+                    if task.earliest_start is None
+                    else convert_datetime_to_model_hours(
+                        start_time, task.earliest_start
+                    )
+                )
+                if lb < 0:
+                    raise ValueError(
+                        f"""Task "{task.description}" starts before start time."""
+                    )
+                ub = (
+                    project_deadline_hours
+                    if task.deadline is None
+                    else convert_datetime_to_model_hours(start_time, task.deadline)
+                )
+                if ub > project_deadline_hours:
+                    raise ValueError(
+                        f"""Task "{task.description}" deadline {fmt_date(task.deadline)} is greater than project deadline {deadline}."""
+                    )
+                start_var = model.NewIntVar(lb, ub, f"{name}_start_{task.task_id}")
+                dur = int(task.duration.total_seconds() / 3600)
 
-            interval_var = model.NewOptionalFixedSizeIntervalVar(
-                start_var, dur, presence, f"{name}_interval_{task.task_id}"
-            )
+                interval_var = model.NewOptionalFixedSizeIntervalVar(
+                    start_var, dur, presence, f"{name}_interval_{task.task_id}"
+                )
 
-            var_group[task.task_id] = task_type(
-                start=start_var,
-                end=start_var + dur,
-                interval=interval_var,
-            )
+                var_group[task.task_id] = task_type(
+                    start=start_var,
+                    end=start_var + dur,
+                    interval=interval_var,
+                )
 
     # Define non-available intervals
     availabilities.sort(key=lambda a: a[0], reverse=False)
@@ -897,6 +914,7 @@ def post_process_solution(
     late_vars: Dict,
     presences: Dict,
     copy=False,
+    fix_gtasks=False,
 ) -> List[Event]:
     """Set task times"""
     start_tasks = find_start_tasks(tasks)
@@ -910,6 +928,8 @@ def post_process_solution(
         tasks = deepcopy(tasks)
 
     for task in tasks.all_tasks:
+        if task.gtasks_id and fix_gtasks:
+            continue
         if solver.Value(presences[task.task_id]) > 0:
             task.scheduled_early_start = convert_model_hours_to_datetime(
                 start_time, solver.Value(early_vars[task.task_id].start)
@@ -920,6 +940,11 @@ def post_process_solution(
                 start_time, solver.Value(late_vars[task.task_id].start)
             )
             task.scheduled_deadline = task.scheduled_late_start + task.duration
+        else:
+            task.scheduled_early_start = None
+            task.scheduled_early_finish = None
+            task.scheduled_late_start = None
+            task.scheduled_deadline = None
     return tasks
 
 
@@ -1021,7 +1046,6 @@ def optimize_schedule(
         block_duration=block_duration,
         max_solutions=50,
         timeout=120,
-        num_retries=1,
         separate_objectives=True,
     )
 
