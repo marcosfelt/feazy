@@ -402,7 +402,9 @@ def _update_notion_tasks(request_bodies: List[Tuple[str, Dict]]):
 def update_notion_tasks(tasks: TaskGraph, use_async=False):
     request_bodies = []
     for task in tasks.all_tasks:
-        if task.scheduled_early_start or task.scheduled_deadline:
+        if (
+            task.scheduled_early_start or task.scheduled_deadline
+        ) and not task.completed:
             props = {
                 "Scheduled Early Start": {
                     "date": {"start": fmt_date(task.scheduled_early_start)}
@@ -424,12 +426,11 @@ def update_notion_tasks(tasks: TaskGraph, use_async=False):
                     if task.scheduled_deadline
                     else None
                 },
-                "GoogleTaskId": {
-                    "rich_text": [
-                        {"text": {"content": task.gtasks_id if task.gtasks_id else ""}}
-                    ]
-                },
             }
+            if task.gtasks_id:
+                props["GoogleTaskId"] = {
+                    "rich_text": [{"text": {"content": task.gtasks_id}}]
+                }
             request_bodies.append((task.task_id, props))
 
     if use_async:
@@ -580,24 +581,39 @@ def get_gtasks(service, reclaim_list_id: str) -> List[Task]:
     return items
 
 
-def sync_from_gtasks(tasks: TaskGraph, gtasks: List, copy=False) -> TaskGraph:
+def sync_with_gtasks(
+    service: Resource, reclaim_list_id: str, gtasks: List, tasks: TaskGraph, copy=False
+) -> TaskGraph:
     """Update task completion status based on Gtasks"""
     if copy:
         tasks = deepcopy(tasks)
 
     # Set tasks completed in Gtasks but not in Notion to be complete in Notion
     # If the deadline has been delayed, update that
+    # Also check off tasks completed in Notion but not in Gtasks
+    batch = service.new_batch_http_request()
     for task in tasks.all_tasks:
         if task.gtasks_id:
             found_gtask = False
             for gtask in gtasks:
                 if gtask["id"] == task.gtasks_id:
-                    # Completion status
-                    completed = True if gtask["status"] == "completed" else False
-                    if completed and not task.completed:
+                    # Sync gtasks completion status -> Notion
+                    gtasks_completed = True if gtask["status"] == "completed" else False
+                    if gtasks_completed and not task.completed:
                         task.completed = True
 
-                    # Due date update
+                    # Sync Notion completion status -> Gtasks
+                    if task.completed and not gtasks_completed:
+                        body = {
+                            "status": "completed",
+                        }
+                        batch.add(
+                            service.tasks().update(
+                                tasklist=reclaim_list_id, task=task.gtasks_id, body=body
+                            )
+                        )
+
+                    # Due date update (remnant from when I was fixing tasks already scheduled in Notion)
                     due_date = rfc_parse(gtask["due"]) if gtask.get("due") else None
                     if due_date is None:
                         continue
@@ -606,6 +622,8 @@ def sync_from_gtasks(tasks: TaskGraph, gtasks: List, copy=False) -> TaskGraph:
                     found_gtask = True
             if not found_gtask:
                 task.gtasks_id = None
+    # Update Gtasks
+    batch.execute()
     return tasks
 
 

@@ -24,7 +24,7 @@ from feazy.plan import (
     update_notion_tasks,
     get_gtasks,
     get_gtasks_service,
-    sync_from_gtasks,
+    sync_with_gtasks,
     update_gtasks,
 )
 import pytz
@@ -67,14 +67,19 @@ def task_optimization(
                     start_time = task.scheduled_early_start
     if deadline is None:
         deadline = timezone.localize((Apr / 30 / 2023)[00:00])
-    logging.info(f"Start Time: {fmt_date(start_time)}")
-    logging.info(f"Deadline: {fmt_date(deadline)}")
+    logger.info(f"Start Time: {fmt_date(start_time)}")
+    logger.info(f"Deadline: {fmt_date(deadline)}")
 
     # Merge in Gtasks/Reclaim
-    logger.info("Syncing downloaded tasks with Gtasks")
+    logger.info("Syncing Notion with Gtasks")
     gservice = get_gtasks_service()
     gtasks = get_gtasks(gservice, reclaim_tasklist_id)
-    tasks = sync_from_gtasks(tasks, gtasks)
+    tasks = sync_with_gtasks(
+        service=gservice,
+        reclaim_list_id=reclaim_tasklist_id,
+        gtasks=gtasks,
+        tasks=tasks,
+    )
 
     # Work Times (9-5 M-F)
     work_times = {

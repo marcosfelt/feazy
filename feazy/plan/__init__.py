@@ -7,7 +7,7 @@ from .integrations import (
     get_task_lists,
     get_gtasks,
     get_gtasks_service,
-    sync_from_gtasks,
+    sync_with_gtasks,
     update_gtasks,
     get_calendars,
     get_availability,
