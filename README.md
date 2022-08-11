@@ -2,7 +2,7 @@
 
 A fast way to break down long term goals into bite-sized tasks and keep yourself accountable to doing them.
 
-Right now, it takes tasks in a [database in Notion](https://www.notion.so/kobifelton/89357b5cf7c749d6872a32636375b064?v=8d62d65e02754fbe84e94b2789d55e68) and schedules them. It takes into account deadlines, wait times (e.g., for feedback) and task dependencies.
+Right now, feazy takes tasks in a [database in Notion](https://www.notion.so/kobifelton/89357b5cf7c749d6872a32636375b064?v=8d62d65e02754fbe84e94b2789d55e68) and schedules them using an optimization algorithm. Feazy takes into account deadlines, wait times (e.g., for feedback) and task dependencies.
 
 ![notion tasks](static/schedule_notion.png)
 
